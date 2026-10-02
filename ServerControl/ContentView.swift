@@ -17,16 +17,16 @@ struct PendingCommand: Identifiable {
 }
 
 struct ContentView: View {
-    @StateObject private var api = ServerAPI()
+    @ObservedObject var api: ServerAPI
     @State private var pending: PendingCommand?
     @State private var selectedTab = ContentView.initialTab
-    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("appearance.v2") private var appearance = AppAppearance.system.rawValue
 
     private static var initialTab: Int {
         #if DEBUG
         let arguments = ProcessInfo.processInfo.arguments
         if arguments.contains("--preview-pm2") { return 1 }
+        if arguments.contains("--preview-services") { return 3 }
         if arguments.contains("--preview-docker") { return 2 }
         if arguments.contains("--preview-settings") || arguments.contains("--preview-notifications") { return 4 }
         #endif
@@ -52,8 +52,8 @@ struct ContentView: View {
             NavigationStack { ContainersView(api: api, requestCommand: { pending = $0 }) }
                 .tabItem { Label("Docker", systemImage: "shippingbox") }
                 .tag(2)
-            NavigationStack { GeminiView() }
-                .tabItem { Label("Gemini", systemImage: "sparkles") }
+            NavigationStack { ServiceCatalogView(api: api) }
+                .tabItem { Label("Services", systemImage: "square.stack.3d.up") }
                 .tag(3)
             NavigationStack { SettingsView(api: api) }
                 .tabItem { Label("Settings", systemImage: "gearshape") }
@@ -61,10 +61,6 @@ struct ContentView: View {
         }
         .tint(Brand.accent)
         .preferredColorScheme(colorScheme)
-        .task { await api.loadDashboard() }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active && !api.actionBusy { Task { await api.loadDashboard() } }
-        }
         .confirmationDialog(pending?.title ?? "Confirm command",
             isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }),
             titleVisibility: .visible, presenting: pending) { command in

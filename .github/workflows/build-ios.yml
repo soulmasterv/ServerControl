@@ -11,7 +11,7 @@ permissions:
 jobs:
   build:
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -24,7 +24,38 @@ jobs:
       - name: Build ServerControl for iPhone
         run: |
           set -euo pipefail
-          xcodebuild -project ServerControl.xcodeproj -scheme ServerControl -configuration Release -sdk iphoneos -destination "generic/platform=iOS" -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" MARKETING_VERSION=1.0.0 CURRENT_PROJECT_VERSION=${{ github.run_number }} build
+          xcodebuild -project ServerControl.xcodeproj -scheme ServerControl -configuration Release -sdk iphoneos -destination "generic/platform=iOS" -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" CURRENT_PROJECT_VERSION=${{ github.run_number }} build
+      - name: Select iPhone simulator
+        run: |
+          DEVICE=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(v["udid"] for devices in d["devices"].values() for v in devices if v["name"].startswith("iPhone")))')
+          echo "SIMULATOR_ID=$DEVICE" >> "$GITHUB_ENV"
+      - name: Test API compatibility and command safety
+        run: |
+          xcodebuild test -project ServerControl.xcodeproj -scheme ServerControl -configuration Debug -sdk iphonesimulator -destination "platform=iOS Simulator,id=$SIMULATOR_ID" -derivedDataPath build-test -resultBundlePath TestResults.xcresult -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+      - name: Capture V2 previews
+        run: |
+          set -euo pipefail
+          xcrun simctl boot "$SIMULATOR_ID" || true
+          xcrun simctl bootstatus "$SIMULATOR_ID" -b
+          xcrun simctl status_bar "$SIMULATOR_ID" override --time "9:41" --dataNetwork wifi --wifiMode active --wifiBars 3 --batteryState charged --batteryLevel 100
+          xcrun simctl install "$SIMULATOR_ID" build-test/Build/Products/Debug-iphonesimulator/ServerControl.app
+          mkdir -p screenshots
+          for mode in light dark; do
+            for screen in home pm2 docker settings notifications; do
+              args=(--ui-preview "--preview-$screen")
+              if [ "$mode" = "dark" ]; then args+=(--dark-preview); fi
+              xcrun simctl launch --terminate-running-process "$SIMULATOR_ID" com.servercontrol.app "${args[@]}"
+              sleep 3
+              xcrun simctl io "$SIMULATOR_ID" screenshot "screenshots/$screen-$mode.png"
+            done
+          done
+      - name: Upload simulator previews
+        uses: actions/upload-artifact@v4
+        with:
+          name: ServerControl-V2-Previews
+          path: screenshots/*.png
+          if-no-files-found: error
+          retention-days: 30
       - name: Package and validate IPA
         run: |
           set -euo pipefail
@@ -32,6 +63,7 @@ jobs:
           test -f "$APP/ServerControl"
           plutil -lint "$APP/Info.plist"
           lipo "$APP/ServerControl" -verify_arch arm64
+          python3 tools/validate_bundle.py "$APP"
           mkdir -p Payload
           cp -R "$APP" Payload/
           zip -qry ServerControl.ipa Payload
@@ -46,3 +78,11 @@ jobs:
             ServerControl.ipa.sha256
           if-no-files-found: error
           retention-days: 30
+      - name: Upload test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ServerControl-TestResults
+          path: TestResults.xcresult
+          if-no-files-found: ignore
+          retention-days: 7

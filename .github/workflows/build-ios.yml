@@ -65,28 +65,15 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.capture_previews
         timeout-minutes: 8
         run: |
-          set -euxo pipefail
-          open -a Simulator --args -CurrentDeviceUDID "$SIMULATOR_ID"
-          xcrun simctl boot "$SIMULATOR_ID" || true
-          xcrun simctl bootstatus "$SIMULATOR_ID" -b
-          xcrun simctl install "$SIMULATOR_ID" build-test/Build/Products/Debug-iphonesimulator/ServerControl.app
+          set -euo pipefail
           mkdir -p screenshots
-          for mode in light dark; do
-            for screen in pm2 services lock; do
-              args=(--ui-preview "--preview-$screen")
-              if [ "$mode" = "dark" ]; then args+=(--dark-preview); fi
-              xcrun simctl terminate "$SIMULATOR_ID" com.servercontrol.app || true
-              xcrun simctl launch "$SIMULATOR_ID" com.servercontrol.app "${args[@]}"
-              sleep 3
-              xcrun simctl io "$SIMULATOR_ID" screenshot "screenshots/$screen-$mode.png"
-            done
-          done
+          xcrun xcresulttool export attachments --path TestResults.xcresult --output-path screenshots
       - name: Upload simulator previews
         if: github.event_name == 'workflow_dispatch' && inputs.capture_previews
         uses: actions/upload-artifact@v4
         with:
           name: ServerControl-V3-Previews
-          path: screenshots/*.png
+          path: screenshots/
           if-no-files-found: error
           retention-days: 30
       - name: Upload test diagnostics

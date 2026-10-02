@@ -21,6 +21,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.servercontrol.app
         PRODUCT_NAME: ServerControl
+        MARKETING_VERSION: 2.0.0
+        CURRENT_PROJECT_VERSION: 1
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGNING_ALLOWED: "NO"
         CODE_SIGNING_REQUIRED: "NO"
@@ -30,6 +33,29 @@ targets:
       path: ServerControl/Info.plist
       properties:
         CFBundleDisplayName: Server Control
+        NSFaceIDUsageDescription: Authorize sensitive server commands with Face ID before they are sent to your server.
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
+
+  ServerControlTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    dependencies:
+      - target: ServerControl
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.servercontrol.app.tests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+
+schemes:
+  ServerControl:
+    build:
+      targets:
+        ServerControl: all
+    test:
+      config: Debug
+      targets:
+        - ServerControlTests

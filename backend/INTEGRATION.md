@@ -1,5 +1,67 @@
 # Ubuntu agent required before Services becomes live
 
+## BACKEND AGENT REQUIRED — V3.1 deployment checklist
+
+No live service integration or log endpoint deployment has been performed. The app
+does not substitute samples for missing live data. Inspect the actual Ubuntu source
+and existing services; their private URLs, file paths and entrypoints are not available
+in this repository and must be resolved on Ubuntu rather than guessed.
+
+| Endpoint | Existing source to inspect and connect |
+| --- | --- |
+| GET `/api/services` Gemini fields | Existing authenticated Gemini monitor's health, 10 key status records, last authentication/generation checks. Server-to-server credentials stay in protected local configuration. |
+| POST `/api/services/gemini/{key-1…key-10}/test` | Existing monitor's individual test operation with its current authentication, using a fixed safe ID to actual-key mapping on Ubuntu. No key supplied by iOS. |
+| GET `/api/services` Classera fields | Existing Classera 1/2/3 scheduler/service and webhook state, last run and report metadata. Do not change scheduled automation. |
+| POST `/api/services/classera/{classera-1…classera-3}/fire` | Each existing Classera automation's predefined report/fire entrypoint and intended WhatsApp recipients. Register callbacks only after inspecting those actual operations. |
+| GET `/api/services` Padel fields | Existing Padel watcher, bot, dashboard and WhatsApp/webhook health. Read delivery/billing status from the existing WhatsApp/Meta response or delivery records separately from process health. |
+| GET `/api/process/{id}/logs?limit=500` | Existing PM2 metadata `pm_id`, `pm_out_log_path`, `pm_err_log_path`. Select explicit approved process IDs/names on Ubuntu; register only their stdout/stderr files under approved log roots in LogsAdapter. |
+| GET `/api/docker/{name}/logs?limit=500` | Existing approved Docker container names. Optional fixed callback using the existing local Docker integration, bounded tail and timeout, stdout/stderr separated. No new socket exposure. |
+| Existing GET `/api/dashboard` optional process fields | PM2 `pm_uptime` converted into an uptime string and `restart_time` mapped to `restartCount`. Missing metadata is shown as Not reported. |
+
+All routes use the EXISTING bearer check. POST bodies are empty; no client command,
+recipient, file path, key or callback argument is accepted. Decode the Docker name
+once as a single URL path segment before exact allowlist lookup. Reject extra query
+parameters; logs accept only an integer `limit`, clamped to 1…500.
+
+### Exact response contracts
+
+`GET /api/services` returns:
+```
+{
+  geminiHealth: string,
+  gemini: [{id: string, name: string, status: string,
+    lastAuthenticationCheck: ISO8601|null, lastGenerationCheck: ISO8601|null, canTest: boolean}],
+  classera: [{id: string, name: string, status: string, schedulerStatus: string|null,
+    webhookStatus: string|null, lastRun: ISO8601|null, lastReport: ISO8601|null, canFire: boolean}],
+  padel: [{id: string, name: string, status: string, deliveryStatus: string|null,
+    lastNotification: ISO8601|null}]
+}
+```
+The arrays contain all 10 safe Gemini identifiers, Classera 1/2/3 and four Padel
+components when the adapter is connected. Unknown data is Unknown, not fabricated
+success. Public friendly names must be safe aliases. Gemini states include Working,
+Rate Limited, Invalid, High Demand, Google Issue, Unknown. Padel application health
+and WhatsApp Billing Required/Payment Ineligible/Delivery Failed remain separate.
+Action success is `{ "ok": true }`; unknown action 404, missing provider 501,
+authentication failure 401/403, duplicate action 409, upstream failure 502/503.
+
+Both log endpoints return:
+```
+{ lines: [{id: string, stream: "stdout"|"stderr", text: string, timestamp: ISO8601|null}],
+  truncated: boolean, fetchedAt: ISO8601 }
+```
+Read at most 64 KiB per approved PM2 stream, retain at most 500 total lines and 2000
+characters per line. Do not read `.env`, environment variables or arbitrary paths.
+The adapter redacts obvious Authorization/Bearer/API-key/token/password fields before
+returning text. This is basic redaction, not a guarantee against every secret format;
+inspect approved logs for additional service-specific sensitive data before exposing
+them. Preserve per-stream order; use real timestamps to merge streams if available.
+Do not invent timestamps. Docker callbacks need equivalent byte/line/time limits.
+
+Deploy only after stub safety tests and auth/allowlist/redaction checks pass. Test live
+status and logs read-only afterwards. Real WhatsApp fires require the human's explicit
+confirmation and app device authentication; do not fire reports as deployment tests.
+
 This repository did not contain the live backend. No Ubuntu access was available.
 `services_adapter.py` is a reviewed integration component, not a drop-in replacement
 or a claim that the live backend was inspected/deployed.

@@ -23,6 +23,8 @@ struct PM2Process: Codable, Identifiable {
     let status: String
     let cpu: Double?
     let memoryMB: Double?
+    var uptime: String? = nil
+    var restartCount: Int? = nil
 
     var processId: Int {
         id

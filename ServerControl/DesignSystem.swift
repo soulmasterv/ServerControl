@@ -48,7 +48,7 @@ struct SectionHeading: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.headline)
-            if let subtitle { Text(subtitle).font(.subheadline).foregroundStyle(.secondary) }
+            if let subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary) }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -57,18 +57,15 @@ struct ConnectionNotice: View {
     @ObservedObject var api: ServerAPI
     var body: some View {
         if let message = api.errorMessage {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: api.connection == .unauthorized ? "lock.shield" : "wifi.exclamationmark")
-                    .foregroundStyle(.orange).padding(.top, 2)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(api.connection.title).font(.subheadline.bold())
-                    Text(message).font(.caption).foregroundStyle(.secondary)
-                    if api.dashboard != nil { Text("Showing the last successful snapshot. Controls are paused.").font(.caption).foregroundStyle(.secondary) }
+            Label {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(message).font(.caption)
+                    if api.dashboard != nil { Text("Cached snapshot • controls paused").font(.caption2) }
                 }
-                Spacer(minLength: 0)
-            }
-            .padding(16).background(Color.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: 18))
-            .accessibilityElement(children: .combine)
+            } icon: { Image(systemName: api.connection == .unauthorized ? "lock.shield" : "wifi.exclamationmark") }
+            .foregroundStyle(.orange).padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
         }
         if let notice = api.actionNotice {
             Label(notice, systemImage: "checkmark.circle")

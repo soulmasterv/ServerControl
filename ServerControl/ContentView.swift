@@ -22,6 +22,11 @@ struct ContentView: View {
     @State private var selectedTab = ContentView.initialTab
     @AppStorage("appearance.v2") private var appearance = AppAppearance.system.rawValue
 
+    init(api: ServerAPI, initialTab: Int? = nil) {
+        self.api = api
+        _selectedTab = State(initialValue: initialTab ?? Self.initialTab)
+    }
+
     private static var initialTab: Int {
         #if DEBUG
         let arguments = ProcessInfo.processInfo.arguments

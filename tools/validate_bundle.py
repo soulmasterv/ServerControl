@@ -7,7 +7,7 @@ app = Path(sys.argv[1])
 with (app / 'Info.plist').open('rb') as source:
     info = plistlib.load(source)
 assert info['CFBundleIdentifier'] == 'com.servercontrol.app'
-assert info['CFBundleShortVersionString'] == '2.0.0'
+assert info['CFBundleShortVersionString'] == '2.1.0'
 assert info.get('NSFaceIDUsageDescription')
 icons = info.get('CFBundleIcons', {}).get('CFBundlePrimaryIcon', {})
 assert icons.get('CFBundleIconName') == 'AppIcon', icons

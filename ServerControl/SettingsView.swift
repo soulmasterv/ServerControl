@@ -19,7 +19,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("Server Control").font(.title3.bold())
                         Text("Your infrastructure, within reach.").font(.caption).foregroundStyle(.secondary)
-                        Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.1.0")")
+                        Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "3.0.0")")
                             .font(.caption2).foregroundStyle(.secondary)
                     }.padding(.vertical, 8)
                 }
@@ -31,6 +31,7 @@ struct SettingsView: View {
                 SecureField(api.hasSavedToken ? "Replace saved token (optional)" : "Server token", text: $token)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                     .accessibilityLabel("Server token")
+                LabeledContent("Active endpoint", value: api.activeBaseURL == ServerAPI.defaultBaseURL ? "Production" : "Tailscale fallback")
                 LabeledContent("Token", value: api.hasSavedToken ? "Saved in Keychain" : "Not configured")
                     .font(.subheadline)
                 Button("Save & connect") {
@@ -66,7 +67,7 @@ struct SettingsView: View {
                 Label {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Protected server controls").font(.subheadline.bold())
-                        Text("Every command needs confirmation and Face ID, Touch ID or your device passcode. Without a device passcode, commands remain locked.")
+                        Text("The app locks in the background. Every command needs confirmation and Face ID, Touch ID or your device passcode. Without a device passcode, commands remain locked.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 } icon: { Image(systemName: "lock.shield").foregroundStyle(Brand.teal) }
@@ -79,15 +80,15 @@ struct SettingsView: View {
                     ForEach(AppAppearance.allCases) { option in Text(option.title).tag(option.rawValue) }
                 }
                 NavigationLink { NotificationSettingsView() } label: {
-                    Label("Notifications", systemImage: "bell.badge")
+                    Label("Local notifications", systemImage: "bell.badge")
                 }
             }
             Section {
                 LabeledContent("Distribution", value: "SideStore")
                 LabeledContent("Minimum iOS", value: "17")
-                Text("Gemini integration is planned. Notification preferences are ready for a future server transport.")
+                Text("Service status comes from your authenticated ServerControl backend.")
                     .font(.caption).foregroundStyle(.secondary)
-            } header: { Text("About V2") }
+            } header: { Text("About") }
         }
         .navigationTitle("Settings")
         .onAppear {

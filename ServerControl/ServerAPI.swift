@@ -400,8 +400,12 @@ final class ServerAPI: ObservableObject {
                 clearNoticeSoon()
             } else if commandStarted && error is URLError {
                 actionError = "The connection was interrupted. The command may have reached the server. Refresh to check before trying again."
-                connection = .unreachable
-                errorMessage = "Refresh to verify the server state."
+                if Self.isRefreshCancellation(error) {
+                    needsVerification = true
+                } else {
+                    connection = .unreachable
+                    errorMessage = "Refresh to verify the server state."
+                }
             } else {
                 actionError = friendly(error)
                 if let http = error as? HTTPFailure, [401, 403].contains(http.status) {

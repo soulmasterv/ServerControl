@@ -21,7 +21,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.servercontrol.app
         PRODUCT_NAME: ServerControl
-        MARKETING_VERSION: 2.1.0
+        MARKETING_VERSION: 3.0.0
         CURRENT_PROJECT_VERSION: 1
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1"
@@ -35,7 +35,7 @@ targets:
         CFBundleDisplayName: Server Control
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
-        NSFaceIDUsageDescription: Authorize sensitive server commands with Face ID before they are sent to your server.
+        NSFaceIDUsageDescription: Unlock Server Control and authorize sensitive server commands with Face ID.
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false

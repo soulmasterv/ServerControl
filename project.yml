@@ -33,6 +33,8 @@ targets:
       path: ServerControl/Info.plist
       properties:
         CFBundleDisplayName: Server Control
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSFaceIDUsageDescription: Authorize sensitive server commands with Face ID before they are sent to your server.
         UILaunchScreen: {}
         UIApplicationSceneManifest:

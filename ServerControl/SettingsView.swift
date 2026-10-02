@@ -19,7 +19,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("Server Control").font(.title3.bold())
                         Text("Your infrastructure, within reach.").font(.caption).foregroundStyle(.secondary)
-                        Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.0.0")")
+                        Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.1.0")")
                             .font(.caption2).foregroundStyle(.secondary)
                     }.padding(.vertical, 8)
                 }

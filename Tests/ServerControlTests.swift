@@ -92,7 +92,25 @@ final class ServerControlTests: XCTestCase {
         XCTAssertTrue(MockURLProtocol.requests.isEmpty)
     }
 
-    func testPM2LayoutOnIPhoneWithSearchVisibleAndKeyboardDismissed() async throws {
+    func testLogRouteLimitCacheAndCredentialBoundary() async throws {
+        let api = makeAPI()
+        let lines = (0..<700).map { LogLine(id: String($0), stream: $0.isMultiple(of: 2) ? "stdout" : "stderr", text: "Line \($0)", timestamp: nil) }
+        MockURLProtocol.handler = { _ in (200, try JSONEncoder().encode(LogSnapshot(lines: lines, truncated: true, fetchedAt: "2026-10-03T00:00:00Z"))) }
+        let result = try await api.loadLogs(.process(0))
+        XCTAssertEqual(result.lines.count, 500)
+        XCTAssertEqual(result.lines.first?.id, "200")
+        XCTAssertEqual(MockURLProtocol.requests.first?.url?.path, "/api/process/0/logs")
+        XCTAssertEqual(MockURLProtocol.requests.first?.url?.query, "limit=500")
+        XCTAssertEqual(api.cachedLogs(.process(0))?.lines.count, 500)
+        MockURLProtocol.handler = { _ in (501, Data()) }
+        do { _ = try await api.loadLogs(.process(0)); XCTFail("Missing logs endpoint must fail") } catch { }
+        XCTAssertEqual(api.cachedLogs(.process(0))?.lines.count, 500)
+        api.setAccessAllowed(false)
+        do { _ = try await api.loadLogs(.process(0)); XCTFail("Locked app must not request logs") } catch { }
+        XCTAssertEqual(MockURLProtocol.requests.count, 2)
+    }
+
+    func testCompactScreensOnIPhoneWithKeyboardDismissed() async throws {
         let api = makeAPI()
         await api.loadDashboard()
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
@@ -102,10 +120,11 @@ final class ServerControlTests: XCTestCase {
             else { UserDefaults.standard.removeObject(forKey: "appearance.v2") }
         }
         for mode in ["light", "dark"] {
+          for (screen, tab) in [("home", 0), ("pm2", 1), ("docker", 2), ("services", 3), ("settings", 4)] {
             UserDefaults.standard.set(mode, forKey: "appearance.v2")
             let window = UIWindow(windowScene: scene)
             window.frame = scene.coordinateSpace.bounds
-            window.rootViewController = UIHostingController(rootView: ContentView(api: api, initialTab: 1))
+            window.rootViewController = UIHostingController(rootView: ContentView(api: api, initialTab: tab))
             window.makeKeyAndVisible()
             window.endEditing(true)
             let ready = expectation(description: "SwiftUI laid out \(mode) PM2")
@@ -116,12 +135,13 @@ final class ServerControlTests: XCTestCase {
                 window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
             }
             let attachment = XCTAttachment(image: image)
-            attachment.name = "pm2-\(mode)"
+            attachment.name = "\(screen)-\(mode)"
             attachment.lifetime = .keepAlways
             add(attachment)
             XCTAssertEqual(api.dashboard?.processes.count, 16)
             XCTAssertNil(api.errorMessage)
             window.isHidden = true
+          }
         }
     }
 

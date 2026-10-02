@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import UIKit
 
 enum ConnectionState: Equatable {
     case notConfigured, connecting, connected, unreachable, unauthorized, incompatible
@@ -72,6 +73,8 @@ final class ServerAPI: ObservableObject {
     private var fallbackUntil: Date?
     private var needsVerification = false
     private var noticeTask: Task<Void, Never>?
+    private var logRequests: [LogTarget: Task<LogSnapshot, Error>] = [:]
+    private var logSnapshots: [LogTarget: LogSnapshot] = [:]
 
     init(session: URLSession? = nil, defaults: UserDefaults = .standard,
          accessAllowed: Bool = true, snapshotStore: DashboardSnapshotStore? = nil,
@@ -120,6 +123,8 @@ final class ServerAPI: ObservableObject {
             servicesGeneration += 1
             dashboardRefresh?.cancel()
             servicesRefresh?.cancel()
+            logRequests.values.forEach { $0.cancel() }
+            logRequests.removeAll()
             dashboardRefresh = nil
             servicesRefresh = nil
             loading = false
@@ -150,6 +155,7 @@ final class ServerAPI: ObservableObject {
         let cleanToken = replacementToken.trimmingCharacters(in: .whitespacesAndNewlines)
         if !cleanToken.isEmpty { try KeychainManager.save(token: cleanToken) }
         defaults.set(valid.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")), forKey: "serverURL")
+        resetSecondaryRequests()
         hasSavedToken = !tokenProvider().isEmpty
         dashboard = nil
         lastUpdated = nil
@@ -159,6 +165,7 @@ final class ServerAPI: ObservableObject {
         fallbackUntil = nil
         snapshotStore?.clear()
         serviceSnapshot = nil
+        logSnapshots.removeAll()
         servicesUpdatedAt = nil
         servicesError = nil
     }
@@ -166,6 +173,7 @@ final class ServerAPI: ObservableObject {
     func removeToken() throws {
         guard !loading && !actionBusy else { throw APIError.message("Wait for the current request to finish.") }
         try KeychainManager.delete()
+        resetSecondaryRequests()
         hasSavedToken = false
         dashboard = nil
         lastUpdated = nil
@@ -174,6 +182,7 @@ final class ServerAPI: ObservableObject {
         connection = .notConfigured
         snapshotStore?.clear()
         serviceSnapshot = nil
+        logSnapshots.removeAll()
         servicesUpdatedAt = nil
         servicesError = nil
     }
@@ -317,6 +326,39 @@ final class ServerAPI: ObservableObject {
         await refresh.value
     }
 
+    func cachedLogs(_ target: LogTarget) -> LogSnapshot? { logSnapshots[target] }
+    private func resetSecondaryRequests() {
+        servicesGeneration += 1
+        servicesRefresh?.cancel()
+        servicesRefresh = nil
+        servicesLoading = false
+        logRequests.values.forEach { $0.cancel() }
+        logRequests.removeAll()
+    }
+    func loadLogs(_ target: LogTarget) async throws -> LogSnapshot {
+        guard accessAllowed && !Task.isCancelled else { throw CancellationError() }
+        if let task = logRequests[target] { return try await task.value }
+        let generation = servicesGeneration
+        let task = Task { @MainActor in
+            let (data, response) = try await self.get(path: target.path)
+            guard self.accessAllowed && generation == self.servicesGeneration else { throw CancellationError() }
+            try self.validate(response)
+            guard data.count <= 1_048_576 else { throw APIError.message("Log response is too large.") }
+            let decoded = try JSONDecoder().decode(LogSnapshot.self, from: data)
+            var ids = Set<String>()
+            let lines = decoded.lines.suffix(500).filter { ids.insert($0.id).inserted }.map {
+                LogLine(id: $0.id, stream: $0.stream, text: String($0.text.prefix(2000)), timestamp: $0.timestamp)
+            }
+            return LogSnapshot(lines: lines, truncated: decoded.truncated == true || decoded.lines.count > 500, fetchedAt: decoded.fetchedAt)
+        }
+        logRequests[target] = task
+        defer { if generation == servicesGeneration { logRequests[target] = nil } }
+        let result = try await task.value
+        guard accessAllowed && generation == servicesGeneration else { throw CancellationError() }
+        logSnapshots[target] = result
+        return result
+    }
+
     func serviceAction(_ action: ServiceCommand) async {
         let permitted: Bool
         switch action.kind {
@@ -388,6 +430,7 @@ final class ServerAPI: ObservableObject {
                 throw APIError.message("The server declined the command.")
             }
             actionNotice = refreshServices ? "Request accepted for \(name). Check its last result below." : "\(action.title) requested for \(name)."
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
             clearNoticeSoon()
             if refreshServices { await loadServices() } else { await loadDashboard() }
         } catch {

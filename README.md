@@ -1,4 +1,6 @@
-# Server Control V2
+# Server Control V2.1
+
+V2.1 fixes dashboard refresh cancellation appearing as a PM2 connection failure. Home, PM2, Docker, app activation and pull-to-refresh all await one API-owned in-flight request. A disappearing/cancelled view cannot cancel that shared request. URL cancellation (-999) and Swift cancellation preserve the prior connection, error, cached snapshot and timestamp; genuine failures still retain cached data and disable controls. The next pull-to-refresh starts immediately after completion, with no retries or delay.
 
 A native SwiftUI iOS 17 app for the existing Ubuntu Server Control API, built on GitHub's macOS runners and installed using SideStore.
 

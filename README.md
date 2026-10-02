@@ -35,7 +35,9 @@ For notifications while Server Control is closed, the Ubuntu server must detect 
 
 ## Build and verification
 
-GitHub Actions generates the Xcode project with XcodeGen, builds the unsigned iPhone Release app, runs simulator unit tests for API compatibility and authentication boundaries, captures light/dark previews using Debug-only fixture data, validates the compiled icon and Face ID privacy description, and packages `Payload/ServerControl.app` as `ServerControl.ipa` with its SHA-256 checksum.
+GitHub Actions generates the Xcode project with XcodeGen, builds the unsigned iPhone Release app, runs simulator unit tests for API compatibility and authentication boundaries, validates the compiled icon and Face ID privacy description, and packages `Payload/ServerControl.app` as `ServerControl.ipa` with its SHA-256 checksum.
+
+Optional simulator screenshots can be requested with the Capture optional simulator screenshots switch when manually running the workflow. They use Debug-only fixture data and are separate from the normal build path.
 
 Download `ServerControl-IPA` from the successful Actions run, extract the outer ZIP, and import the IPA into SideStore. Update the existing app using the same Apple account/bundle identity to retain its data. Device biometric prompts, local notification presentation and live server commands still require real-iPhone verification.
 

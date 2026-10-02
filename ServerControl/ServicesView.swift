@@ -35,7 +35,27 @@ struct ProcessesView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 16) {
-                ConnectionNotice(api: api)
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Find a process", text: $search)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .submitLabel(.search).accessibilityLabel("Find a process")
+                    if !search.isEmpty {
+                        Button { search = "" } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        }.accessibilityLabel("Clear process search")
+                    }
+                }
+                .padding(12)
+                .background(Color(uiColor: .tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+                // Do not insert an empty row: even an empty custom view can leave stack spacing.
+                if api.errorMessage != nil || api.actionNotice != nil {
+                    ConnectionNotice(api: api)
+                }
+                if let date = api.lastUpdated {
+                    Text("Last updated: \(date.formatted(date: .omitted, time: .shortened))")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
                 if api.dashboard == nil { DashboardPlaceholder(api: api) }
                 else {
                     SectionHeading(title: "\(api.dashboard?.processes.count ?? 0) processes",
@@ -71,7 +91,7 @@ struct ProcessesView: View {
             }.padding(20)
         }
         .background(Brand.background).navigationTitle("PM2")
-        .searchable(text: $search, prompt: "Find a process")
+        .scrollDismissesKeyboard(.interactively)
         .refreshable { await api.loadDashboard() }
     }
 }
@@ -88,6 +108,10 @@ struct ContainersView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 16) {
                 ConnectionNotice(api: api)
+                if let date = api.lastUpdated {
+                    Text("Last updated: \(date.formatted(date: .omitted, time: .shortened))")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
                 if api.dashboard == nil { DashboardPlaceholder(api: api) }
                 else {
                     SectionHeading(title: "\(api.dashboard?.containers.count ?? 0) containers",

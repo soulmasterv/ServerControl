@@ -136,34 +136,6 @@ struct NotificationSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Label {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Ready for a future transport").font(.headline)
-                        Text(manager.transport.explanation).font(.subheadline).foregroundStyle(.secondary)
-                    }.padding(.vertical, 8)
-                } icon: { Image(systemName: "bell.badge").foregroundStyle(Brand.accent) }
-                LabeledContent("Server delivery", value: "Not connected")
-            } footer: {
-                Text("V2 does not register with APNs, poll in the background, or promise alerts when closed.")
-            }
-            Section {
-                ForEach(AlertCategory.allCases) { category in
-                    Toggle(isOn: Binding(get: { manager.preferences.categories.contains(category) },
-                                         set: { enabled in
-                                             if enabled { manager.preferences.categories.insert(category) }
-                                             else { manager.preferences.categories.remove(category) }
-                                         })) {
-                        Label(category.title, systemImage: category.symbol)
-                    }
-                }
-            } header: { Text("Future alert preferences") }
-              footer: { Text("Saved on this iPhone only. These preferences do not activate server monitoring yet.") }
-            Section("Resource thresholds") {
-                threshold("CPU", value: $manager.preferences.cpuThreshold)
-                threshold("Memory", value: $manager.preferences.memoryThreshold)
-                threshold("Disk", value: $manager.preferences.diskThreshold)
-            }
-            Section {
                 LabeledContent("Permission", value: manager.permission)
                 Button("Allow local notifications") { Task { await manager.requestLocalPermission() } }.disabled(manager.busy)
                 Button("Send a local test") { Task { await manager.sendLocalTest() } }
@@ -172,7 +144,7 @@ struct NotificationSettingsView: View {
             } header: { Text("Local notification test") }
               footer: { Text("A local test verifies iPhone permission and presentation. It is independent of the Ubuntu server.") }
         }
-        .navigationTitle("Notifications").navigationBarTitleDisplayMode(.inline)
+        .navigationTitle("Local notifications").navigationBarTitleDisplayMode(.inline)
         .task { await manager.refreshPermission() }
         .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await manager.refreshPermission() } } }
     }

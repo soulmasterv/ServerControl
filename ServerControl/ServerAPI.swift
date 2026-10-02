@@ -56,6 +56,7 @@ final class ServerAPI: ObservableObject {
     private let authorize: (String) async throws -> Void
     private let defaults: UserDefaults
     private var previewMode = false
+    private var dashboardRefresh: Task<Void, Never>?
 
     init(session: URLSession? = nil, defaults: UserDefaults = .standard,
          tokenProvider: @escaping () -> String = { KeychainManager.load() },
@@ -138,7 +139,12 @@ final class ServerAPI: ObservableObject {
     }
 
     func loadDashboard() async {
-        guard !previewMode && !loading else { return }
+        guard !previewMode else { return }
+        if let refresh = dashboardRefresh {
+            await refresh.value
+            return
+        }
+        guard !Task.isCancelled else { return }
         hasSavedToken = !tokenProvider().isEmpty
         guard hasSavedToken else {
             connection = .notConfigured
@@ -146,8 +152,21 @@ final class ServerAPI: ObservableObject {
             return
         }
         loading = true
+        // ServerAPI owns this unstructured task. Leaving a tab or cancelling a
+        // refreshable waiter must not cancel the shared URLSession request.
+        let refresh = Task { @MainActor in
+            await self.refreshDashboard()
+            self.loading = false
+            self.dashboardRefresh = nil
+        }
+        dashboardRefresh = refresh
+        await refresh.value
+    }
+
+    private func refreshDashboard() async {
+        let previousConnection = connection
+        let previousError = errorMessage
         if dashboard == nil { connection = .connecting }
-        defer { loading = false }
         do {
             let (data, response) = try await session.data(for: request(path: "/api/dashboard"))
             try validate(response)
@@ -156,6 +175,11 @@ final class ServerAPI: ObservableObject {
             connection = .connected
             errorMessage = nil
         } catch {
+            if Self.isRefreshCancellation(error) {
+                connection = previousConnection
+                errorMessage = previousError
+                return
+            }
             if let httpError = error as? HTTPFailure, [401, 403].contains(httpError.status) {
                 connection = .unauthorized
             } else if error is DecodingError {
@@ -165,6 +189,12 @@ final class ServerAPI: ObservableObject {
             }
             errorMessage = friendly(error)
         }
+    }
+
+    static func isRefreshCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let underlying = error as NSError
+        return underlying.domain == NSURLErrorDomain && underlying.code == NSURLErrorCancelled
     }
 
     func healthCheck() async throws -> HealthResponse {

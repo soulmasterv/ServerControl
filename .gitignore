@@ -1,0 +1,17 @@
+build/
+build-test/
+Payload/
+*.ipa
+*.ipa.sha256
+*.xcresult/
+ServerControl.xcodeproj/
+ServerControl/Info.plist
+ServerControlTests/Info.plist
+screenshots/
+.env
+.env.*
+*.p12
+*.mobileprovision
+*.key
+*.pem
+.DS_Store

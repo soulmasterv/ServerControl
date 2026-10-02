@@ -1,5 +1,7 @@
 import XCTest
 import LocalAuthentication
+import SwiftUI
+import UIKit
 @testable import ServerControl
 
 final class MockURLProtocol: URLProtocol {
@@ -88,6 +90,39 @@ final class ServerControlTests: XCTestCase {
         XCTAssertEqual(api.connection, .notConfigured)
         XCTAssertFalse(api.canControl)
         XCTAssertTrue(MockURLProtocol.requests.isEmpty)
+    }
+
+    func testPM2LayoutOnIPhoneWithSearchVisibleAndKeyboardDismissed() async throws {
+        let api = makeAPI()
+        await api.loadDashboard()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let previousAppearance = UserDefaults.standard.string(forKey: "appearance.v2")
+        defer {
+            if let previousAppearance { UserDefaults.standard.set(previousAppearance, forKey: "appearance.v2") }
+            else { UserDefaults.standard.removeObject(forKey: "appearance.v2") }
+        }
+        for mode in ["light", "dark"] {
+            UserDefaults.standard.set(mode, forKey: "appearance.v2")
+            let window = UIWindow(windowScene: scene)
+            window.frame = scene.coordinateSpace.bounds
+            window.rootViewController = UIHostingController(rootView: ContentView(api: api, initialTab: 1))
+            window.makeKeyAndVisible()
+            window.endEditing(true)
+            let ready = expectation(description: "SwiftUI laid out \(mode) PM2")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { ready.fulfill() }
+            await fulfillment(of: [ready], timeout: 5)
+            window.layoutIfNeeded()
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            let attachment = XCTAttachment(image: image)
+            attachment.name = "pm2-\(mode)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            XCTAssertEqual(api.dashboard?.processes.count, 16)
+            XCTAssertNil(api.errorMessage)
+            window.isHidden = true
+        }
     }
 
     func testConnectivityFallbackPinsTrustedHostButAuthDoesNotFailOver() async throws {

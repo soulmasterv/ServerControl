@@ -7,8 +7,8 @@ struct HomeView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                ConnectionNotice(api: api)
+            VStack(alignment: .leading, spacing: 16) {
+                if api.hasNotice { ConnectionNotice(api: api) }
                 if let dashboard = api.dashboard {
                     serverCard(dashboard.server)
                     SectionHeading(title: "Resources", subtitle: "The latest snapshot from your server")
@@ -26,8 +26,7 @@ struct HomeView: View {
                                 Label("Uptime", systemImage: "clock").font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
                                 Text(dashboard.server.uptime).font(.title3.bold()).fixedSize(horizontal: false, vertical: true)
                                 Text("Since last reboot").font(.caption).foregroundStyle(.secondary)
-                                Spacer(minLength: 0)
-                            }.frame(maxWidth: .infinity, minHeight: 140, alignment: .topLeading)
+                            }.frame(maxWidth: .infinity, alignment: .topLeading)
                         }
                     }
                     SectionHeading(title: "Services", subtitle: "Open PM2 or Docker to manage each service")
@@ -41,10 +40,10 @@ struct HomeView: View {
                         }
                     }
                 } else { DashboardPlaceholder(api: api) }
-            }.padding(20)
+            }.padding(16)
         }
         .background(Brand.background)
-        .navigationTitle("Server Control")
+        .navigationTitle("Server Control").navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { Task { await api.loadDashboard() } } label: {
@@ -110,7 +109,7 @@ struct ResourceCard: View {
                     .accessibilityLabel("\(title) utilization")
                     .accessibilityValue("\(percent.percentText)")
                 Text(percent >= 90 ? "High utilization" : "Current utilization").font(.caption2).foregroundStyle(.secondary)
-            }.frame(maxWidth: .infinity, minHeight: 140, alignment: .topLeading)
+            }.frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
 }

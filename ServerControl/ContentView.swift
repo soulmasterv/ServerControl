@@ -1,414 +1,97 @@
 import SwiftUI
 
+struct PendingCommand: Identifiable {
+    enum Target { case process(Int), docker }
+    let id = UUID()
+    let name: String
+    let target: Target
+    let action: ServerAction
+    var title: String { "\(action.title) \(name)?" }
+    var detail: String {
+        switch action {
+        case .start: return "Start this service on your Ubuntu server. You will authorize with Face ID, Touch ID or your device passcode."
+        case .restart: return "This will briefly interrupt the service. You will authorize with Face ID, Touch ID or your device passcode."
+        case .stop: return "This service will stop running until started again. You will authorize with Face ID, Touch ID or your device passcode."
+        }
+    }
+}
+
 struct ContentView: View {
-
     @StateObject private var api = ServerAPI()
+    @State private var pending: PendingCommand?
+    @State private var selectedTab = ContentView.initialTab
+    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("appearance.v2") private var appearance = AppAppearance.system.rawValue
 
-    var body: some View {
-
-        TabView {
-
-            NavigationStack {
-                HomeView(api: api)
-            }
-            .tabItem {
-                Label(
-                    "Home",
-                    systemImage: "server.rack"
-                )
-            }
-
-            NavigationStack {
-                PM2View(api: api)
-            }
-            .tabItem {
-                Label(
-                    "PM2",
-                    systemImage: "terminal"
-                )
-            }
-
-            NavigationStack {
-                DockerView(api: api)
-            }
-            .tabItem {
-                Label(
-                    "Docker",
-                    systemImage: "shippingbox"
-                )
-            }
-
-            NavigationStack {
-                GeminiView()
-            }
-            .tabItem {
-                Label(
-                    "Gemini",
-                    systemImage: "sparkles"
-                )
-            }
-
-            NavigationStack {
-                SettingsView(api: api)
-            }
-            .tabItem {
-                Label(
-                    "Settings",
-                    systemImage: "gear"
-                )
-            }
-        }
-        .task {
-            await api.loadDashboard()
-        }
-    }
-}
-
-struct HomeView: View {
-
-    @ObservedObject var api: ServerAPI
-
-    var body: some View {
-
-        ScrollView {
-
-            VStack(spacing: 16) {
-
-                if let server = api.dashboard?.server {
-
-                    HStack {
-
-                        Circle()
-                            .fill(.green)
-                            .frame(
-                                width: 10,
-                                height: 10
-                            )
-
-                        Text("Server Online")
-                            .font(.headline)
-
-                        Spacer()
-                    }
-
-                    statCard(
-                        "CPU",
-                        String(format: "%.1f%%", server.cpuPercent)
-                    )
-
-                    statCard(
-                        "Memory",
-                        String(format: "%.1f / %.1f GB", server.memoryUsedGB, server.memoryTotalGB)
-                    )
-
-                    statCard(
-                        "Disk",
-                        String(format: "%.1f / %.1f GB", server.diskUsedGB, server.diskTotalGB)
-                    )
-
-                    statCard(
-                        "Uptime",
-                        server.uptime
-                    )
-
-                } else if api.loading {
-
-                    ProgressView(
-                        "Connecting to server..."
-                    )
-
-                } else {
-
-                    ContentUnavailableView(
-                        "Server Unavailable",
-                        systemImage:
-                            "exclamationmark.triangle",
-                        description: Text(
-                            api.errorMessage ??
-                            "Could not connect."
-                        )
-                    )
-                }
-            }
-            .padding()
-        }
-        .navigationTitle("Server Control")
-        .refreshable {
-            await api.loadDashboard()
-        }
+    private static var initialTab: Int {
+        #if DEBUG
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("--preview-pm2") { return 1 }
+        if arguments.contains("--preview-docker") { return 2 }
+        if arguments.contains("--preview-settings") || arguments.contains("--preview-notifications") { return 4 }
+        #endif
+        return 0
     }
 
-    private func statCard(
-        _ title: String,
-        _ value: String
-    ) -> some View {
-
-        HStack {
-
-            VStack(alignment: .leading) {
-
-                Text(title)
-                    .foregroundStyle(.secondary)
-
-                Text(value)
-                    .font(.title3.bold())
-            }
-
-            Spacer()
-        }
-        .padding()
-        .background(
-            .regularMaterial,
-            in: RoundedRectangle(
-                cornerRadius: 16
-            )
-        )
+    private var colorScheme: ColorScheme? {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--dark-preview") { return .dark }
+        if ProcessInfo.processInfo.arguments.contains("--ui-preview") { return .light }
+        #endif
+        return AppAppearance(rawValue: appearance)?.scheme
     }
-}
-
-struct PM2View: View {
-
-    @ObservedObject var api: ServerAPI
 
     var body: some View {
-
-        List(api.dashboard?.processes ?? []) {
-            process in
-
-            VStack(alignment: .leading) {
-
-                HStack {
-
-                    Circle()
-                        .fill(
-                            process.status == "online"
-                            ? .green
-                            : .red
-                        )
-                        .frame(
-                            width: 8,
-                            height: 8
-                        )
-
-                    Text(process.name)
-                        .font(.headline)
-
-                    Spacer()
-
-                    Text(process.status)
-                        .foregroundStyle(
-                            .secondary
-                        )
-                }
-
-                Text(
-                    "PM2 ID \(process.id)"
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-                HStack {
-
-                    Button("Start") {
-                        Task {
-                            try? await api.processAction(
-                                id: process.id,
-                                action: "start"
-                            )
-                        }
-                    }
-
-                    Button("Restart") {
-                        Task {
-                            try? await api.processAction(
-                                id: process.id,
-                                action: "restart"
-                            )
-                        }
-                    }
-
-                    Button("Stop", role: .destructive) {
-                        Task {
-                            try? await api.processAction(
-                                id: process.id,
-                                action: "stop"
-                            )
-                        }
-                    }
-                }
-                .buttonStyle(.bordered)
-            }
-            .padding(.vertical, 4)
+        TabView(selection: $selectedTab) {
+            NavigationStack { HomeView(api: api) }
+                .tabItem { Label("Home", systemImage: "square.grid.2x2") }
+                .tag(0)
+            NavigationStack { ProcessesView(api: api, requestCommand: { pending = $0 }) }
+                .tabItem { Label("PM2", systemImage: "terminal") }
+                .tag(1)
+            NavigationStack { ContainersView(api: api, requestCommand: { pending = $0 }) }
+                .tabItem { Label("Docker", systemImage: "shippingbox") }
+                .tag(2)
+            NavigationStack { GeminiView() }
+                .tabItem { Label("Gemini", systemImage: "sparkles") }
+                .tag(3)
+            NavigationStack { SettingsView(api: api) }
+                .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag(4)
         }
-        .navigationTitle("PM2")
-        .refreshable {
-            await api.loadDashboard()
+        .tint(Brand.accent)
+        .preferredColorScheme(colorScheme)
+        .task { await api.loadDashboard() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active && !api.actionBusy { Task { await api.loadDashboard() } }
         }
-    }
-}
-
-struct DockerView: View {
-
-    @ObservedObject var api: ServerAPI
-
-    var body: some View {
-
-        List(api.dashboard?.containers ?? []) {
-            container in
-
-            VStack(alignment: .leading) {
-
-                Text(container.name)
-                    .font(.headline)
-
-                Text(
-                    container.status ??
-                    container.state ??
-                    "Unknown"
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-                HStack {
-
-                    Button("Start") {
-                        Task {
-                            try? await api.dockerAction(
-                                name: container.name,
-                                action: "start"
-                            )
-                        }
-                    }
-
-                    Button("Restart") {
-                        Task {
-                            try? await api.dockerAction(
-                                name: container.name,
-                                action: "restart"
-                            )
-                        }
-                    }
-
-                    Button(
-                        "Stop",
-                        role: .destructive
-                    ) {
-                        Task {
-                            try? await api.dockerAction(
-                                name: container.name,
-                                action: "stop"
-                            )
-                        }
-                    }
-                }
-                .buttonStyle(.bordered)
-            }
-            .padding(.vertical, 4)
-        }
-        .navigationTitle("Docker")
-        .refreshable {
-            await api.loadDashboard()
-        }
-    }
-}
-
-struct GeminiView: View {
-
-    var body: some View {
-
-        ContentUnavailableView(
-            "Gemini Monitor",
-            systemImage: "sparkles",
-            description: Text(
-                "Gemini integration will be added next."
-            )
-        )
-        .navigationTitle("Gemini")
-    }
-}
-
-struct SettingsView: View {
-
-    @ObservedObject var api: ServerAPI
-
-    @State private var serverURL = ""
-    @State private var token = ""
-
-    @State private var result = ""
-
-    var body: some View {
-
-        Form {
-
-            Section("Server") {
-
-                TextField(
-                    "Server URL",
-                    text: $serverURL
-                )
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-
-                SecureField(
-                    "Server Token",
-                    text: $token
-                )
-
-                Button("Save") {
-
-                    api.baseURL = serverURL
-
-                    if !token.isEmpty {
-                        KeychainManager.save(
-                            token: token
-                        )
-                    }
-
-                    result = "Saved"
-                }
-
-                Button("Test Connection") {
-
+        .confirmationDialog(pending?.title ?? "Confirm command",
+            isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }),
+            titleVisibility: .visible, presenting: pending) { command in
+                Button(command.action.title, role: command.action == .stop ? .destructive : nil) {
                     Task {
-
-                        do {
-
-                            let health =
-                                try await api.healthCheck()
-
-                            result = health.ok
-                                ? "Server Online"
-                                : "Server Error"
-
-                        } catch {
-
-                            result =
-                                error.localizedDescription
+                        switch command.target {
+                        case .process(let id): await api.processAction(id: id, name: command.name, action: command.action)
+                        case .docker: await api.dockerAction(name: command.name, action: command.action)
                         }
                     }
                 }
-
-                if !result.isEmpty {
-
-                    Text(result)
-                        .foregroundStyle(
-                            .secondary
-                        )
+                Button("Cancel", role: .cancel) {}
+            } message: { command in Text(command.detail) }
+        .alert("Command not completed",
+               isPresented: Binding(get: { api.actionError != nil }, set: { if !$0 { api.actionError = nil } })) {
+            Button("OK", role: .cancel) { api.actionError = nil }
+        } message: { Text(api.actionError ?? "") }
+        .overlay(alignment: .center) {
+            if api.actionBusy {
+                HStack(spacing: 12) {
+                    ProgressView().tint(Brand.accent)
+                    Text(api.actionProgress).font(.subheadline.weight(.medium))
                 }
+                .padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+                .shadow(color: .black.opacity(0.1), radius: 20, y: 8)
+                .accessibilityElement(children: .combine)
             }
-
-            Section("Security") {
-
-                Text(
-                    "The server token is stored locally in iOS Keychain and is never included in the app source."
-                )
-                .font(.caption)
-            }
-        }
-        .navigationTitle("Settings")
-        .onAppear {
-
-            serverURL = api.baseURL
         }
     }
 }

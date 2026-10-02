@@ -2,62 +2,38 @@ import Foundation
 import Security
 
 enum KeychainManager {
-
-    private static let service = "ServerControl"
-    private static let account = "server-token"
-
-    static func save(token: String) {
-        let data = Data(token.utf8)
-
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-
-        SecItemDelete(query as CFDictionary)
-
-        var newQuery = query
-        newQuery[kSecValueData as String] = data
-        newQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-
-        SecItemAdd(newQuery as CFDictionary, nil)
+    // Preserve V1's identity so an in-place SideStore update can keep the token.
+    private static var query: [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: "ServerControl",
+         kSecAttrAccount as String: "server-token"]
     }
-
-    static func load() -> String {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
+    static func save(token: String) throws {
+        let attributes: [String: Any] = [
+            kSecValueData as String: Data(token.utf8),
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         ]
-
-        var result: AnyObject?
-
-        let status = SecItemCopyMatching(
-            query as CFDictionary,
-            &result
-        )
-
-        guard
-            status == errSecSuccess,
-            let data = result as? Data,
-            let token = String(data: data, encoding: .utf8)
-        else {
-            return ""
+        var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            status = SecItemAdd(query.merging(attributes) { _, new in new } as CFDictionary, nil)
         }
-
-        return token
+        guard status == errSecSuccess else {
+            throw APIError.message("The token could not be saved securely. Unlock your iPhone and try again.")
+        }
     }
-
-    static func delete() {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-
-        SecItemDelete(query as CFDictionary)
+    static func load() -> String {
+        var lookup = query
+        lookup[kSecReturnData as String] = true
+        lookup[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: AnyObject?
+        guard SecItemCopyMatching(lookup as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return "" }
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+    static func delete() throws {
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw APIError.message("The token could not be removed. Unlock your iPhone and try again.")
+        }
     }
 }

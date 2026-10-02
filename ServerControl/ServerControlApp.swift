@@ -4,6 +4,6 @@ import SwiftUI
 struct ServerControlApp: App {
     init() { _ = NotificationManager.shared }
     var body: some Scene {
-        WindowGroup { ContentView() }
+        WindowGroup { AppRootView() }
     }
 }

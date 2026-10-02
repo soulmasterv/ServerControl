@@ -20,6 +20,9 @@ struct ServiceCatalogView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
+                if api.servicesLoading { ProgressView().controlSize(.small) }
+                if let error = api.servicesError { Text(error).font(.caption).foregroundStyle(.secondary) }
+                SnapshotStamp(date: api.servicesUpdatedAt, failed: api.servicesError != nil)
                 ForEach(ServicePage.allCases) { page in
                     NavigationLink {
                         ServiceDetailView(api: api, page: page)
@@ -37,8 +40,10 @@ struct ServiceCatalogView: View {
                         }
                     }.buttonStyle(.plain)
                 }
-            }.padding(20)
-        }.background(Brand.background).navigationTitle("Services")
+            }.padding(16)
+        }.background(Brand.background).navigationTitle("Services").navigationBarTitleDisplayMode(.inline)
+        .task { await api.loadServices() }
+        .refreshable { await api.loadServices() }
     }
 }
 struct ServiceDetailView: View {
@@ -53,16 +58,14 @@ struct ServiceDetailView: View {
                     Text(error).font(.subheadline).foregroundStyle(.secondary)
                     Button("Try again") { Task { await api.loadServices() } }.buttonStyle(.bordered)
                 }
-                if let date = api.servicesUpdatedAt {
-                    Text("Last updated: \(date.formatted(date: .omitted, time: .shortened))").font(.caption).foregroundStyle(.secondary)
-                }
+                SnapshotStamp(date: api.servicesUpdatedAt, failed: api.servicesError != nil)
                 if api.serviceSnapshot != nil {
                     serviceContent
                 } else if !api.servicesLoading && api.servicesError == nil {
                     Text("Service status is not available yet.").foregroundStyle(.secondary)
                 }
-            }.padding(20)
-        }.background(Brand.background).navigationTitle(page.title)
+            }.padding(16)
+        }.background(Brand.background).navigationTitle(page.title).navigationBarTitleDisplayMode(.inline)
         .task { await api.loadServices() }
         .refreshable { await api.loadServices() }
         .confirmationDialog(pending?.title ?? "Confirm", isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }), titleVisibility: .visible, presenting: pending) { command in

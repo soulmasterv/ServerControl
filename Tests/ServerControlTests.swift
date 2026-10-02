@@ -5,6 +5,7 @@ import LocalAuthentication
 final class MockURLProtocol: URLProtocol {
     static var handler: ((URLRequest) throws -> (Int, Data))?
     static var requests: [URLRequest] = []
+    static var onStart: ((MockURLProtocol) -> Void)?
     private static let lock = NSLock()
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -12,16 +13,38 @@ final class MockURLProtocol: URLProtocol {
         Self.lock.lock()
         Self.requests.append(request)
         let handler = Self.handler
+        let onStart = Self.onStart
         Self.lock.unlock()
+        if let onStart { onStart(self); return }
         do {
             let (status, data) = try XCTUnwrap(handler)(request)
-            let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: data)
-            client?.urlProtocolDidFinishLoading(self)
+            respond(status: status, data: data)
         } catch { client?.urlProtocol(self, didFailWithError: error) }
     }
+    func respond(status: Int, data: Data) {
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
     override func stopLoading() {}
+}
+
+final class DashboardRequestGate {
+    private let lock = NSLock()
+    private var pending: MockURLProtocol?
+    func capture(_ request: MockURLProtocol) {
+        lock.lock()
+        pending = request
+        lock.unlock()
+    }
+    func complete(with data: Data) {
+        lock.lock()
+        let request = pending
+        pending = nil
+        lock.unlock()
+        request?.respond(status: 200, data: data)
+    }
 }
 
 @MainActor
@@ -32,11 +55,13 @@ final class ServerControlTests: XCTestCase {
         suite = "ServerControlTests.\(UUID())"
         defaults = UserDefaults(suiteName: suite)
         MockURLProtocol.requests = []
+        MockURLProtocol.onStart = nil
         MockURLProtocol.handler = { _ in (200, try JSONEncoder().encode(PreviewFixtures.dashboard)) }
     }
     override func tearDown() async throws {
         defaults.removePersistentDomain(forName: suite)
         MockURLProtocol.handler = nil
+        MockURLProtocol.onStart = nil
     }
     private func makeAPI(token: String = "unit-test-placeholder",
                          authorize: @escaping (String) async throws -> Void = { _ in }) -> ServerAPI {
@@ -139,5 +164,107 @@ final class ServerControlTests: XCTestCase {
     func testNotificationFoundationHasNoActiveRemoteTransport() {
         XCTAssertFalse(DeferredAlertTransport().isAvailable)
         XCTAssertEqual(AlertCategory.allCases.count, 8)
+    }
+
+    func testCancelledRefreshPreservesSuccessfulSnapshotAndConnection() async {
+        let api = makeAPI()
+        await api.loadDashboard()
+        let date = api.lastUpdated
+        let name = api.dashboard?.processes.first?.name
+        XCTAssertTrue(ServerAPI.isRefreshCancellation(CancellationError()))
+        let cancellations: [Error] = [URLError(.cancelled),
+            NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled)]
+        for cancellation in cancellations {
+            MockURLProtocol.handler = { _ in throw cancellation }
+            await api.loadDashboard()
+            XCTAssertEqual(api.connection, .connected)
+            XCTAssertEqual(api.lastUpdated, date)
+            XCTAssertEqual(api.dashboard?.processes.first?.name, name)
+            XCTAssertNil(api.errorMessage)
+            XCTAssertFalse(api.loading)
+            XCTAssertTrue(api.canControl)
+        }
+        MockURLProtocol.handler = { _ in (200, try JSONEncoder().encode(PreviewFixtures.dashboard)) }
+        await api.loadDashboard()
+        XCTAssertEqual(api.connection, .connected)
+        XCTAssertNil(api.errorMessage)
+    }
+
+    func testCancelledInitialRefreshDoesNotReportConnectionLost() async {
+        let api = makeAPI()
+        MockURLProtocol.handler = { _ in throw URLError(.cancelled) }
+        await api.loadDashboard()
+        XCTAssertEqual(api.connection, .notConfigured)
+        XCTAssertNil(api.errorMessage)
+        XCTAssertNil(api.dashboard)
+        XCTAssertFalse(api.loading)
+    }
+
+    func testCancellationPreservesAnExistingGenuineOutage() async {
+        let api = makeAPI()
+        await api.loadDashboard()
+        MockURLProtocol.handler = { _ in throw URLError(.notConnectedToInternet) }
+        await api.loadDashboard()
+        let error = api.errorMessage
+        let date = api.lastUpdated
+        XCTAssertEqual(api.connection, .unreachable)
+        XCTAssertNotNil(api.dashboard)
+        XCTAssertNotNil(error)
+        XCTAssertFalse(api.canControl)
+        MockURLProtocol.handler = { _ in throw URLError(.cancelled) }
+        await api.loadDashboard()
+        XCTAssertEqual(api.connection, .unreachable)
+        XCTAssertEqual(api.errorMessage, error)
+        XCTAssertEqual(api.lastUpdated, date)
+    }
+
+    func testTabAndPullToRefreshWaitersShareRequestDespiteCancellation() async throws {
+        let api = makeAPI()
+        await api.loadDashboard()
+        MockURLProtocol.requests = []
+        let started = expectation(description: "Shared request started")
+        let gate = DashboardRequestGate()
+        MockURLProtocol.onStart = { request in gate.capture(request); started.fulfill() }
+        var firstReturned = false
+        var secondReturned = false
+        let first = Task { await api.loadDashboard(); firstReturned = true }
+        await fulfillment(of: [started], timeout: 5)
+        first.cancel() // SwiftUI removes the view that originally requested refresh.
+        let joined = expectation(description: "Pull-to-refresh joined")
+        let second = Task { joined.fulfill(); await api.loadDashboard(); secondReturned = true }
+        await fulfillment(of: [joined], timeout: 5)
+        second.cancel() // Another tab disappears while the shared request is pending.
+        XCTAssertFalse(firstReturned)
+        XCTAssertFalse(secondReturned)
+        XCTAssertTrue(api.loading)
+        XCTAssertEqual(MockURLProtocol.requests.count, 1)
+        XCTAssertEqual(api.connection, .connected)
+        XCTAssertNil(api.errorMessage)
+        gate.complete(with: try JSONEncoder().encode(PreviewFixtures.dashboard))
+        await first.value
+        await second.value
+        XCTAssertTrue(firstReturned)
+        XCTAssertTrue(secondReturned)
+        XCTAssertEqual(MockURLProtocol.requests.count, 1)
+        XCTAssertFalse(api.loading)
+        XCTAssertEqual(api.connection, .connected)
+        XCTAssertNil(api.errorMessage)
+        XCTAssertTrue(api.canControl)
+        MockURLProtocol.onStart = nil
+        await api.loadDashboard()
+        XCTAssertEqual(MockURLProtocol.requests.count, 2) // Next pull starts immediately.
+    }
+
+    func testAlreadyCancelledCallerDoesNotStartRefresh() async {
+        let api = makeAPI()
+        let caller = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            await api.loadDashboard()
+        }
+        await caller.value
+        XCTAssertTrue(MockURLProtocol.requests.isEmpty)
+        XCTAssertEqual(api.connection, .notConfigured)
+        XCTAssertNil(api.errorMessage)
+        XCTAssertFalse(api.loading)
     }
 }

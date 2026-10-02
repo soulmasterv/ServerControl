@@ -58,6 +58,7 @@ jobs:
         timeout-minutes: 8
         run: |
           set -euxo pipefail
+          open -a Simulator --args -CurrentDeviceUDID "$SIMULATOR_ID"
           xcrun simctl boot "$SIMULATOR_ID" || true
           xcrun simctl bootstatus "$SIMULATOR_ID" -b
           xcrun simctl install "$SIMULATOR_ID" build-test/Build/Products/Debug-iphonesimulator/ServerControl.app
@@ -66,7 +67,8 @@ jobs:
             for screen in home pm2 docker settings notifications; do
               args=(--ui-preview "--preview-$screen")
               if [ "$mode" = "dark" ]; then args+=(--dark-preview); fi
-              xcrun simctl launch --terminate-running-process "$SIMULATOR_ID" com.servercontrol.app "${args[@]}"
+              xcrun simctl terminate "$SIMULATOR_ID" com.servercontrol.app || true
+              xcrun simctl launch "$SIMULATOR_ID" com.servercontrol.app "${args[@]}"
               sleep 3
               xcrun simctl io "$SIMULATOR_ID" screenshot "screenshots/$screen-$mode.png"
             done

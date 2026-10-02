@@ -235,6 +235,34 @@ final class ServerControlTests: XCTestCase {
         XCTAssertEqual(api.connection, .unreachable)
         XCTAssertTrue(api.actionError?.contains("may have reached") ?? false)
     }
+
+    func testCancelledCommandRequiresVerificationWithoutFalseOutageOrRetry() async {
+        let api = makeAPI()
+        await api.loadDashboard()
+        MockURLProtocol.handler = { _ in throw URLError(.cancelled) }
+        await api.processAction(id: 1, name: "test-service", action: .restart)
+        XCTAssertEqual(MockURLProtocol.requests.filter { $0.httpMethod == "POST" }.count, 1)
+        XCTAssertEqual(api.connection, .connected)
+        XCTAssertNil(api.errorMessage)
+        XCTAssertFalse(api.canControl)
+        XCTAssertTrue(api.actionError?.contains("may have reached") == true)
+    }
+
+    func testCancelledClasseraAuthorizationDoesNotFire() async throws {
+        let api = makeAPI(authorize: { _ in throw NSError(domain: LAError.errorDomain, code: LAError.userCancel.rawValue) })
+        let services = Data("""
+        {"classera":[{"id":"classera-1","name":"Classera 1","status":"Working","canFire":true}]}
+        """.utf8)
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/services" { return (200, services) }
+            return (200, try JSONEncoder().encode(PreviewFixtures.dashboard))
+        }
+        await api.loadDashboard()
+        await api.loadServices()
+        await api.serviceAction(ServiceCommand(kind: .fireClasseraReport, id: "classera-1", name: "Classera 1"))
+        XCTAssertFalse(MockURLProtocol.requests.contains { $0.httpMethod == "POST" })
+        XCTAssertEqual(api.actionNotice, "Cancelled. No command was sent.")
+    }
     func testSecureURLValidationAndPathEncoding() throws {
         for url in ["http://example.com", "https://user:pass@example.com", "https://example.com?token=x", "https://example.com#fragment"] {
             XCTAssertThrowsError(try ServerAPI.validatedBaseURL(url))

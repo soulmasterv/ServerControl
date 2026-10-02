@@ -2,6 +2,11 @@ name: Build ServerControl IPA
 
 on:
   workflow_dispatch:
+    inputs:
+      capture_previews:
+        description: Capture optional simulator screenshots
+        type: boolean
+        default: false
   push:
     branches: [main]
 
@@ -55,6 +60,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Capture V2 previews
+        if: github.event_name == 'workflow_dispatch' && inputs.capture_previews
         timeout-minutes: 8
         run: |
           set -euxo pipefail
@@ -74,6 +80,7 @@ jobs:
             done
           done
       - name: Upload simulator previews
+        if: github.event_name == 'workflow_dispatch' && inputs.capture_previews
         uses: actions/upload-artifact@v4
         with:
           name: ServerControl-V2-Previews

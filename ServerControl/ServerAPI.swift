@@ -39,7 +39,8 @@ final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {
 
 @MainActor
 final class ServerAPI: ObservableObject {
-    static let defaultBaseURL = "https://ubuntu-lts.tail341977.ts.net/server-control"
+    static let defaultBaseURL = "https://control.admin-ai.site"
+    static let fallbackBaseURL = "https://ubuntu-lts.tail341977.ts.net/server-control"
     @Published private(set) var dashboard: DashboardResponse?
     @Published private(set) var loading = false
     @Published private(set) var connection: ConnectionState = .notConfigured
@@ -50,6 +51,13 @@ final class ServerAPI: ObservableObject {
     @Published var actionError: String?
     @Published var actionNotice: String?
     @Published private(set) var hasSavedToken = false
+    @Published private(set) var accessAllowed: Bool
+    @Published private(set) var lastNetworkSeconds: Double?
+    @Published private(set) var lastDecodeSeconds: Double?
+    @Published private(set) var serviceSnapshot: ServiceSnapshot?
+    @Published private(set) var servicesLoading = false
+    @Published private(set) var servicesError: String?
+    @Published private(set) var servicesUpdatedAt: Date?
 
     private let session: URLSession
     private let tokenProvider: () -> String
@@ -57,8 +65,16 @@ final class ServerAPI: ObservableObject {
     private let defaults: UserDefaults
     private var previewMode = false
     private var dashboardRefresh: Task<Void, Never>?
+    private var servicesRefresh: Task<Void, Never>?
+    private var refreshGeneration = 0
+    private var servicesGeneration = 0
+    private let snapshotStore: DashboardSnapshotStore?
+    private var fallbackUntil: Date?
+    private var needsVerification = false
+    private var noticeTask: Task<Void, Never>?
 
     init(session: URLSession? = nil, defaults: UserDefaults = .standard,
+         accessAllowed: Bool = true, snapshotStore: DashboardSnapshotStore? = nil,
          tokenProvider: @escaping () -> String = { KeychainManager.load() },
          authorize: @escaping (String) async throws -> Void = { reason in
              try await DeviceAuthorization.authorize(reason: reason)
@@ -66,10 +82,15 @@ final class ServerAPI: ObservableObject {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.timeoutIntervalForRequest = 10
+        configuration.timeoutIntervalForResource = 15
+        configuration.waitsForConnectivity = false
         self.session = session ?? URLSession(configuration: configuration, delegate: NoRedirectDelegate(), delegateQueue: nil)
         self.defaults = defaults
         self.tokenProvider = tokenProvider
         self.authorize = authorize
+        self.accessAllowed = accessAllowed
+        self.snapshotStore = snapshotStore
         hasSavedToken = !tokenProvider().isEmpty
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-preview") {
@@ -82,15 +103,43 @@ final class ServerAPI: ObservableObject {
         #endif
     }
 
-    var baseURL: String { defaults.string(forKey: "serverURL") ?? Self.defaultBaseURL }
-    var canControl: Bool { connection == .connected && !loading && !actionBusy && hasSavedToken }
+    var baseURL: String {
+        let saved = defaults.string(forKey: "serverURL")
+        return saved == Self.fallbackBaseURL ? Self.defaultBaseURL : (saved ?? Self.defaultBaseURL)
+    }
+    var activeBaseURL: String { fallbackUntil.map { $0 > Date() } == true ? Self.fallbackBaseURL : baseURL }
+    var canControl: Bool { accessAllowed && !needsVerification && connection == .connected && !loading && !actionBusy && hasSavedToken }
+    var hasNotice: Bool { errorMessage != nil || actionNotice != nil }
+
+    func setAccessAllowed(_ allowed: Bool) {
+        guard accessAllowed != allowed else { return }
+        accessAllowed = allowed
+        if !allowed {
+            needsVerification = true
+            refreshGeneration += 1
+            servicesGeneration += 1
+            dashboardRefresh?.cancel()
+            servicesRefresh?.cancel()
+            dashboardRefresh = nil
+            servicesRefresh = nil
+            loading = false
+            servicesLoading = false
+            if dashboard == nil && connection == .connecting { connection = .notConfigured }
+        } else if dashboard == nil && !tokenProvider().isEmpty, let saved = snapshotStore?.read(baseURL: baseURL) {
+            dashboard = saved.dashboard
+            lastUpdated = saved.updatedAt
+            // A disk snapshot is useful immediately, but must be verified before controls unlock.
+            connection = .connecting
+        }
+    }
 
     static func validatedBaseURL(_ value: String) throws -> URL {
         let clean = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let components = URLComponents(string: clean), components.scheme?.lowercased() == "https",
               let host = components.host, !host.isEmpty, components.user == nil, components.password == nil,
-              components.query == nil, components.fragment == nil, let url = components.url else {
-            throw APIError.message("Use an HTTPS server URL without a username, password, query or fragment.")
+              components.query == nil, components.fragment == nil, let url = components.url,
+              [Self.defaultBaseURL, Self.fallbackBaseURL].contains(url.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))) else {
+            throw APIError.message("Use the trusted production or Tailscale ServerControl address.")
         }
         return url
     }
@@ -107,6 +156,11 @@ final class ServerAPI: ObservableObject {
         errorMessage = nil
         actionNotice = nil
         connection = .notConfigured
+        fallbackUntil = nil
+        snapshotStore?.clear()
+        serviceSnapshot = nil
+        servicesUpdatedAt = nil
+        servicesError = nil
     }
 
     func removeToken() throws {
@@ -118,16 +172,21 @@ final class ServerAPI: ObservableObject {
         errorMessage = nil
         actionNotice = nil
         connection = .notConfigured
+        snapshotStore?.clear()
+        serviceSnapshot = nil
+        servicesUpdatedAt = nil
+        servicesError = nil
     }
 
     // Preserve the original API routes and camelCase models.
-    func request(path: String, method: String = "GET", authenticated: Bool = true) throws -> URLRequest {
-        let base = try Self.validatedBaseURL(baseURL)
+    func request(path: String, method: String = "GET", authenticated: Bool = true, endpoint: String? = nil) throws -> URLRequest {
+        guard accessAllowed else { throw CancellationError() }
+        let base = try Self.validatedBaseURL(endpoint ?? activeBaseURL)
         let clean = base.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard path.hasPrefix("/api/"), let url = URL(string: clean + path) else { throw URLError(.badURL) }
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.timeoutInterval = 15
+        request.timeoutInterval = method == "GET" ? 6 : 15
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if authenticated {
@@ -138,8 +197,30 @@ final class ServerAPI: ObservableObject {
         return request
     }
 
+    static func isConnectivityFailure(_ error: Error) -> Bool {
+        guard let error = error as? URLError else { return false }
+        return [.timedOut, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
+                .networkConnectionLost, .notConnectedToInternet].contains(error.code)
+    }
+
+    // Only safe GETs can fail over. A POST is never repeated: it may already have executed.
+    private func get(path: String, authenticated: Bool = true) async throws -> (Data, URLResponse) {
+        let endpoint = activeBaseURL
+        do {
+            return try await session.data(for: request(path: path, authenticated: authenticated, endpoint: endpoint))
+        } catch {
+            guard accessAllowed && !Task.isCancelled && Self.isConnectivityFailure(error), endpoint == Self.defaultBaseURL else { throw error }
+            let result = try await session.data(for: request(path: path, authenticated: authenticated, endpoint: Self.fallbackBaseURL))
+            // Pin a reachable fallback for five minutes instead of flapping between hosts.
+            if let http = result.1 as? HTTPURLResponse, (200...299).contains(http.statusCode) {
+                fallbackUntil = Date().addingTimeInterval(300)
+            }
+            return result
+        }
+    }
+
     func loadDashboard() async {
-        guard !previewMode else { return }
+        guard !previewMode && accessAllowed else { return }
         if let refresh = dashboardRefresh {
             await refresh.value
             return
@@ -152,29 +233,42 @@ final class ServerAPI: ObservableObject {
             return
         }
         loading = true
+        refreshGeneration += 1
+        let generation = refreshGeneration
         // ServerAPI owns this unstructured task. Leaving a tab or cancelling a
         // refreshable waiter must not cancel the shared URLSession request.
         let refresh = Task { @MainActor in
-            await self.refreshDashboard()
-            self.loading = false
-            self.dashboardRefresh = nil
+            await self.refreshDashboard(generation: generation)
+            if generation == self.refreshGeneration {
+                self.loading = false
+                self.dashboardRefresh = nil
+            }
         }
         dashboardRefresh = refresh
         await refresh.value
     }
 
-    private func refreshDashboard() async {
+    private func refreshDashboard(generation: Int) async {
         let previousConnection = connection
         let previousError = errorMessage
         if dashboard == nil { connection = .connecting }
         do {
-            let (data, response) = try await session.data(for: request(path: "/api/dashboard"))
+            let start = Date()
+            let (data, response) = try await get(path: "/api/dashboard")
+            guard accessAllowed && generation == refreshGeneration else { return }
+            let received = Date()
             try validate(response)
-            dashboard = try JSONDecoder().decode(DashboardResponse.self, from: data)
+            let snapshot = try JSONDecoder().decode(DashboardResponse.self, from: data)
+            dashboard = snapshot
             lastUpdated = Date()
+            lastNetworkSeconds = received.timeIntervalSince(start)
+            lastDecodeSeconds = Date().timeIntervalSince(received)
             connection = .connected
+            needsVerification = false
             errorMessage = nil
+            snapshotStore?.save(SavedDashboard(baseURL: baseURL, dashboard: snapshot, updatedAt: lastUpdated!))
         } catch {
+            guard accessAllowed && generation == refreshGeneration else { return }
             if Self.isRefreshCancellation(error) {
                 connection = previousConnection
                 errorMessage = previousError
@@ -191,6 +285,54 @@ final class ServerAPI: ObservableObject {
         }
     }
 
+    func loadServices() async {
+        guard !previewMode && accessAllowed && !tokenProvider().isEmpty else { return }
+        if let refresh = servicesRefresh { await refresh.value; return }
+        guard !Task.isCancelled else { return }
+        servicesGeneration += 1
+        let generation = servicesGeneration
+        servicesLoading = true
+        let refresh = Task { @MainActor in
+            defer {
+                if generation == self.servicesGeneration {
+                    self.servicesLoading = false
+                    self.servicesRefresh = nil
+                }
+            }
+            do {
+                let (data, response) = try await self.get(path: "/api/services")
+                guard self.accessAllowed && generation == self.servicesGeneration else { return }
+                try self.validate(response)
+                self.serviceSnapshot = try JSONDecoder().decode(ServiceSnapshot.self, from: data)
+                self.servicesUpdatedAt = Date()
+                self.servicesError = nil
+            } catch {
+                guard self.accessAllowed && generation == self.servicesGeneration && !Self.isRefreshCancellation(error) else { return }
+                if let http = error as? HTTPFailure, http.status == 404 || http.status == 501 {
+                    self.servicesError = "Service integrations are not connected yet. A compatible Server Control backend update is needed."
+                } else { self.servicesError = self.friendly(error) }
+            }
+        }
+        servicesRefresh = refresh
+        await refresh.value
+    }
+
+    func serviceAction(_ action: ServiceCommand) async {
+        let permitted: Bool
+        switch action.kind {
+        case .testGeminiKey: permitted = serviceSnapshot?.gemini?.contains { $0.id == action.id && $0.canTest == true } == true
+        case .fireClasseraReport: permitted = serviceSnapshot?.classera?.contains { $0.id == action.id && $0.canFire == true } == true
+        }
+        guard permitted && servicesError == nil && !servicesLoading else { actionError = "This control is not available from your server."; return }
+        let id: String
+        do { id = try Self.encodedContainerName(action.id) }
+        catch { actionError = friendly(error); return }
+        let path = action.kind == .testGeminiKey ? "/api/services/gemini/\(id)/test" : "/api/services/classera/\(id)/fire"
+        await performAction(path: path, name: action.name, action: .start,
+            authorizationReason: action.kind == .fireClasseraReport ? "Send the real Classera WhatsApp report for \(action.name)." : "Test \(action.name) through your server.",
+            refreshServices: true)
+    }
+
     static func isRefreshCancellation(_ error: Error) -> Bool {
         if error is CancellationError { return true }
         let underlying = error as NSError
@@ -198,7 +340,7 @@ final class ServerAPI: ObservableObject {
     }
 
     func healthCheck() async throws -> HealthResponse {
-        let (data, response) = try await session.data(for: request(path: "/api/health", authenticated: false))
+        let (data, response) = try await get(path: "/api/health", authenticated: false)
         try validate(response)
         return try JSONDecoder().decode(HealthResponse.self, from: data)
     }
@@ -222,7 +364,8 @@ final class ServerAPI: ObservableObject {
         } catch { actionError = friendly(error) }
     }
 
-    private func performAction(path: String, name: String, action: ServerAction) async {
+    private func performAction(path: String, name: String, action: ServerAction,
+                               authorizationReason: String? = nil, refreshServices: Bool = false) async {
         guard !previewMode else { actionError = "Preview mode cannot send server commands."; return }
         guard canControl else { actionError = "Refresh the dashboard and reconnect before sending a command."; return }
         actionBusy = true
@@ -230,22 +373,31 @@ final class ServerAPI: ObservableObject {
         actionNotice = nil
         defer { actionBusy = false; actionProgress = "" }
         var commandStarted = false
+        let generation = refreshGeneration
         do {
-            try await authorize("\(action.title) \(name) on your server.")
+            try await authorize(authorizationReason ?? "\(action.title) \(name) on your server.")
+            guard accessAllowed && generation == refreshGeneration else { throw CancellationError() }
             let command = try request(path: path, method: "POST")
             actionProgress = "Sending \(action.rawValue)…"
             commandStarted = true
             let (data, response) = try await session.data(for: command)
+            guard accessAllowed && generation == refreshGeneration else { return }
             try validate(response)
             if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                object["ok"] as? Bool == false || object["success"] as? Bool == false {
                 throw APIError.message("The server declined the command.")
             }
-            actionNotice = "\(action.title) requested for \(name)."
-            await loadDashboard()
+            actionNotice = refreshServices ? "Request accepted for \(name). Check its last result below." : "\(action.title) requested for \(name)."
+            clearNoticeSoon()
+            if refreshServices { await loadServices() } else { await loadDashboard() }
         } catch {
+            guard accessAllowed && generation == refreshGeneration else { return }
             if DeviceAuthorization.isCancellation(error) {
                 actionNotice = "Cancelled. No command was sent."
+                clearNoticeSoon()
+            } else if !commandStarted && Self.isRefreshCancellation(error) {
+                actionNotice = "Cancelled. No command was sent."
+                clearNoticeSoon()
             } else if commandStarted && error is URLError {
                 actionError = "The connection was interrupted. The command may have reached the server. Refresh to check before trying again."
                 connection = .unreachable
@@ -257,6 +409,14 @@ final class ServerAPI: ObservableObject {
                     errorMessage = actionError
                 }
             }
+        }
+    }
+
+    private func clearNoticeSoon() {
+        noticeTask?.cancel()
+        noticeTask = Task { @MainActor in
+            do { try await Task.sleep(for: .seconds(3)) } catch { return }
+            self.actionNotice = nil
         }
     }
 

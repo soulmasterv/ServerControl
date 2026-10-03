@@ -21,7 +21,7 @@ struct SnapshotStamp: View {
             TimelineView(.periodic(from: .now, by: 30)) { context in
                 HStack(spacing: 4) {
                     Text("Last updated:")
-                    Text(date, style: .relative)
+                    Text(HumanTime.label(date, now: context.date))
                     if failed || context.date.timeIntervalSince(date) > 120 { Text("• Stale").foregroundStyle(.orange) }
                 }.font(.caption2).foregroundStyle(.secondary)
             }

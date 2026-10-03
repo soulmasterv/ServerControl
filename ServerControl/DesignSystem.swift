@@ -20,28 +20,6 @@ struct BrandMark: View {
     }
 }
 
-struct Surface<Content: View>: View {
-    @ViewBuilder var content: () -> Content
-    var body: some View {
-        content().padding(20).background(Brand.surface, in: RoundedRectangle(cornerRadius: 24))
-    }
-}
-
-struct StatusPill: View {
-    let title: String
-    let color: Color
-    var body: some View {
-        HStack(spacing: 6) {
-            Circle().fill(color).frame(width: 6, height: 6)
-            Text(title).font(.caption.weight(.semibold))
-        }
-        .foregroundStyle(color)
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(color.opacity(0.12), in: Capsule())
-        .accessibilityElement(children: .combine)
-    }
-}
-
 struct SectionHeading: View {
     let title: String
     var subtitle: String? = nil

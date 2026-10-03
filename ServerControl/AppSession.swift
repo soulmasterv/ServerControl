@@ -9,11 +9,14 @@ final class AppSession: ObservableObject {
     private var generation = 0
     private var automaticUnlockPending = true
     private let authenticate: () async throws -> Void
+    private let defaults: UserDefaults
+    var lockEnabled: Bool { defaults.object(forKey: "appLock.v4") as? Bool ?? true }
 
-    init(authenticate: @escaping () async throws -> Void = {
+    init(defaults: UserDefaults = .standard, authenticate: @escaping () async throws -> Void = {
         try await DeviceAuthorization.authorize(reason: "Unlock Server Control to view and manage your server.")
     }) {
         self.authenticate = authenticate
+        self.defaults = defaults
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-preview") &&
             !ProcessInfo.processInfo.arguments.contains("--preview-lock") {
@@ -30,6 +33,7 @@ final class AppSession: ObservableObject {
 
     func unlock() async {
         guard !isUnlocked && !isAuthenticating else { return }
+        if !lockEnabled { isUnlocked = true; automaticUnlockPending = false; return }
         automaticUnlockPending = false
         isAuthenticating = true
         message = nil
@@ -86,8 +90,11 @@ struct AppRootView: View {
             }
         }
         .onChange(of: session.isUnlocked) { _, unlocked in
+            let wasAllowed = api.accessAllowed
             api.setAccessAllowed(unlocked && phase == .active)
-            if unlocked && phase == .active { Task { await api.loadDashboard() } }
+            if unlocked && phase == .active && !wasAllowed {
+                Task { await api.refreshAll() }
+            }
         }
     }
 
@@ -96,9 +103,9 @@ struct AppRootView: View {
         privacyCover = false
         guard !api.accessAllowed else { return }
         await session.activate()
-        guard phase == .active && session.isUnlocked else { return }
+        guard phase == .active && session.isUnlocked && !api.accessAllowed else { return }
         api.setAccessAllowed(true)
-        await api.loadDashboard()
+        await api.refreshAll()
     }
 }
 

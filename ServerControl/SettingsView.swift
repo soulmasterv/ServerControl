@@ -9,17 +9,20 @@ struct SettingsView: View {
     @State private var testing = false
     @State private var removeConfirmation = false
     @State private var notificationPreview = false
+    @AppStorage("appLock.v4") private var appLock = true
+    @State private var lockChange = false
+    @State private var lockChangeBusy = false
     @AppStorage("appearance.v2") private var appearance = AppAppearance.system.rawValue
 
     var body: some View {
         Form {
             Section {
                 HStack(spacing: 14) {
-                    BrandMark(size: 56)
+                    BrandMark(size: 40)
                     VStack(alignment: .leading, spacing: 5) {
                         Text("Server Control").font(.title3.bold())
-                        Text("Your infrastructure, within reach.").font(.caption).foregroundStyle(.secondary)
-                        Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "3.1.0")")
+                        Text("Homelab Command Center").font(.caption).foregroundStyle(.secondary)
+                        Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "4.0.0") • Build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1")")
                             .font(.caption2).foregroundStyle(.secondary)
                     }.padding(.vertical, 8)
                 }
@@ -31,7 +34,8 @@ struct SettingsView: View {
                 SecureField(api.hasSavedToken ? "Replace saved token (optional)" : "Server token", text: $token)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                     .accessibilityLabel("Server token")
-                LabeledContent("Active endpoint", value: api.activeBaseURL == ServerAPI.defaultBaseURL ? "Production" : "Tailscale fallback")
+                LabeledContent("Connection", value: api.connection.title)
+                LabeledContent("Fallback", value: api.activeBaseURL == ServerAPI.fallbackBaseURL ? "Active" : (api.baseURL == ServerAPI.defaultBaseURL ? "Automatic if unreachable" : "Off for custom servers"))
                 LabeledContent("Token", value: api.hasSavedToken ? "Saved in Keychain" : "Not configured")
                     .font(.subheadline)
                 Button("Save & connect") {
@@ -56,18 +60,22 @@ struct SettingsView: View {
                     }
                 } label: {
                     HStack {
-                        Text("Test saved server")
+                        Text("Test Connection")
                         if testing { Spacer(); ProgressView() }
                     }
                 }.disabled(testing || api.loading || api.actionBusy)
                 if !result.isEmpty { Text(result).font(.caption).foregroundStyle(.secondary) }
             } header: { Text("Server connection") }
-              footer: { Text("The production HTTPS address is already configured. Tailscale VPN is not required on this iPhone. Leave the token field blank to keep your saved token.") }
+              footer: { Text("Use your HTTPS ServerControl address. Save only an address you trust: your bearer token will be sent there. Automatic Tailscale fallback applies only to the default production server. Leave the token field blank to keep your saved token.") }
             Section {
+                Toggle("Face ID app lock", isOn: Binding(get: { appLock }, set: { proposed in
+                    if proposed { appLock = true } else { lockChange = true }
+                })).disabled(lockChangeBusy)
+                Text("When enabled, authenticate on launch and after backgrounding. Sensitive actions always require device authentication.").font(.caption).foregroundStyle(.secondary)
                 Label {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Protected server controls").font(.subheadline.bold())
-                        Text("The app locks in the background. Every command needs confirmation and Face ID, Touch ID or your device passcode. Without a device passcode, commands remain locked.")
+                        Text("With app lock enabled, returning from the background requires authentication. Every command needs confirmation and Face ID, Touch ID or your device passcode. Without a device passcode, commands remain locked.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 } icon: { Image(systemName: "lock.shield").foregroundStyle(Brand.teal) }
@@ -82,6 +90,14 @@ struct SettingsView: View {
                 NavigationLink { NotificationSettingsView() } label: {
                     Label("Local notifications", systemImage: "bell.badge")
                 }
+            }
+            Section("Diagnostics") {
+                LabeledContent("Primary server", value: api.baseURL).font(.caption).textSelection(.enabled)
+                LabeledContent("Active server", value: api.activeBaseURL).font(.caption).textSelection(.enabled)
+                LabeledContent("Last snapshot", value: api.lastUpdated.map { HumanTime.label($0) } ?? "Not available")
+                if let network = api.lastNetworkSeconds { LabeledContent("Network", value: String(format: "%.2f s", network)) }
+                if let decode = api.lastDecodeSeconds { LabeledContent("Decode", value: String(format: "%.3f s", decode)) }
+                Text("Refreshes share one in-flight request. Pull to refresh; returning to the foreground refreshes once.").font(.caption).foregroundStyle(.secondary)
             }
             Section {
                 LabeledContent("Distribution", value: "SideStore")
@@ -99,6 +115,16 @@ struct SettingsView: View {
         }
         .navigationDestination(isPresented: $notificationPreview) { NotificationSettingsView() }
         .onDisappear { token = "" }
+        .confirmationDialog("Disable app lock on this iPhone?", isPresented: $lockChange, titleVisibility: .visible) {
+            Button("Disable app lock", role: .destructive) {
+                lockChangeBusy = true
+                Task {
+                    defer { lockChangeBusy = false }
+                    do { try await DeviceAuthorization.authorize(reason: "Disable the ServerControl app lock on this iPhone."); appLock = false }
+                    catch { result = DeviceAuthorization.isCancellation(error) ? "Cancelled. App lock remains enabled." : api.friendly(error) }
+                }
+            }
+        } message: { Text("Server information will be visible without an app unlock prompt. Commands will still require confirmation and authentication.") }
         .confirmationDialog("Remove the saved token?", isPresented: $removeConfirmation, titleVisibility: .visible) {
             Button("Remove token", role: .destructive) {
                 Task {

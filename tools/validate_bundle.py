@@ -7,7 +7,7 @@ app = Path(sys.argv[1])
 with (app / 'Info.plist').open('rb') as source:
     info = plistlib.load(source)
 assert info['CFBundleIdentifier'] == 'com.servercontrol.app'
-assert info['CFBundleShortVersionString'] == '3.1.0'
+assert info['CFBundleShortVersionString'] == '4.0.0'
 assert info.get('NSFaceIDUsageDescription')
 icons = info.get('CFBundleIcons', {}).get('CFBundlePrimaryIcon', {})
 assert icons.get('CFBundleIconName') == 'AppIcon', icons
@@ -17,4 +17,4 @@ assert (app / 'Assets.car').is_file(), 'Missing compiled asset catalog'
 assert 'remote-notification' not in info.get('UIBackgroundModes', [])
 assert not list(app.glob('*.entitlements')), 'Unexpected entitlements'
 assert b'--ui-preview' not in (app / 'ServerControl').read_bytes(), 'Debug preview entry leaked into Release'
-print('Validated V3 version, compiled AppIcon, Face ID description and unsigned bundle.')
+print('Validated V4 version, compiled AppIcon, Face ID description and unsigned bundle.')

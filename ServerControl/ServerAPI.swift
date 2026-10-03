@@ -63,6 +63,7 @@ final class ServerAPI: ObservableObject {
     private let session: URLSession
     private let tokenProvider: () -> String
     private let authorize: (String) async throws -> Void
+    let library: HomelabStore
     private let defaults: UserDefaults
     private var previewMode = false
     private var dashboardRefresh: Task<Void, Never>?
@@ -75,6 +76,7 @@ final class ServerAPI: ObservableObject {
     private var noticeTask: Task<Void, Never>?
     private var logRequests: [LogTarget: Task<LogSnapshot, Error>] = [:]
     private var logSnapshots: [LogTarget: LogSnapshot] = [:]
+    private var logGeneration = 0
 
     init(session: URLSession? = nil, defaults: UserDefaults = .standard,
          accessAllowed: Bool = true, snapshotStore: DashboardSnapshotStore? = nil,
@@ -90,6 +92,7 @@ final class ServerAPI: ObservableObject {
         configuration.waitsForConnectivity = false
         self.session = session ?? URLSession(configuration: configuration, delegate: NoRedirectDelegate(), delegateQueue: nil)
         self.defaults = defaults
+        self.library = HomelabStore(defaults: defaults)
         self.tokenProvider = tokenProvider
         self.authorize = authorize
         self.accessAllowed = accessAllowed
@@ -121,6 +124,7 @@ final class ServerAPI: ObservableObject {
             needsVerification = true
             refreshGeneration += 1
             servicesGeneration += 1
+            logGeneration += 1
             dashboardRefresh?.cancel()
             servicesRefresh?.cancel()
             logRequests.values.forEach { $0.cancel() }
@@ -143,8 +147,9 @@ final class ServerAPI: ObservableObject {
         guard let components = URLComponents(string: clean), components.scheme?.lowercased() == "https",
               let host = components.host, !host.isEmpty, components.user == nil, components.password == nil,
               components.query == nil, components.fragment == nil, let url = components.url,
-              [Self.defaultBaseURL, Self.fallbackBaseURL].contains(url.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))) else {
-            throw APIError.message("Use the trusted production or Tailscale ServerControl address.")
+              components.path.split(separator: "/").allSatisfy({ $0 != "." && $0 != ".." }),
+              components.port.map({ (1...65535).contains($0) }) ?? true else {
+            throw APIError.message("Use an HTTPS server URL without credentials, query parameters or fragments.")
         }
         return url
     }
@@ -294,6 +299,15 @@ final class ServerAPI: ObservableObject {
         }
     }
 
+    func refreshAll() async {
+        async let dashboard: Void = loadDashboard()
+        async let services: Void = loadServices()
+        _ = await (dashboard, services)
+    }
+    func ensureServicesFresh() async {
+        guard servicesUpdatedAt.map({ Date().timeIntervalSince($0) < 30 }) != true else { return }
+        await loadServices()
+    }
     func loadServices() async {
         guard !previewMode && accessAllowed && !tokenProvider().isEmpty else { return }
         if let refresh = servicesRefresh { await refresh.value; return }
@@ -329,6 +343,7 @@ final class ServerAPI: ObservableObject {
     func cachedLogs(_ target: LogTarget) -> LogSnapshot? { logSnapshots[target] }
     private func resetSecondaryRequests() {
         servicesGeneration += 1
+        logGeneration += 1
         servicesRefresh?.cancel()
         servicesRefresh = nil
         servicesLoading = false
@@ -338,32 +353,34 @@ final class ServerAPI: ObservableObject {
     func loadLogs(_ target: LogTarget) async throws -> LogSnapshot {
         guard accessAllowed && !Task.isCancelled else { throw CancellationError() }
         if let task = logRequests[target] { return try await task.value }
-        let generation = servicesGeneration
+        let generation = logGeneration
         let task = Task { @MainActor in
             let (data, response) = try await self.get(path: target.path)
-            guard self.accessAllowed && generation == self.servicesGeneration else { throw CancellationError() }
+            guard self.accessAllowed && generation == self.logGeneration else { throw CancellationError() }
             try self.validate(response)
             guard data.count <= 1_048_576 else { throw APIError.message("Log response is too large.") }
             let decoded = try JSONDecoder().decode(LogSnapshot.self, from: data)
             var ids = Set<String>()
-            let lines = decoded.lines.suffix(500).filter { ids.insert($0.id).inserted }.map {
-                LogLine(id: $0.id, stream: $0.stream, text: String($0.text.prefix(2000)), timestamp: $0.timestamp)
+            let lines = decoded.lines.suffix(500).filter { ["stdout", "stderr"].contains($0.stream) && ids.insert($0.id).inserted }.map {
+                LogLine(id: $0.id, stream: $0.stream, text: LogPrivacy.redact($0.text), timestamp: $0.timestamp)
             }
             return LogSnapshot(lines: lines, truncated: decoded.truncated == true || decoded.lines.count > 500, fetchedAt: decoded.fetchedAt)
         }
         logRequests[target] = task
-        defer { if generation == servicesGeneration { logRequests[target] = nil } }
+        defer { if generation == logGeneration { logRequests[target] = nil } }
         let result = try await task.value
-        guard accessAllowed && generation == servicesGeneration else { throw CancellationError() }
+        guard accessAllowed && generation == logGeneration else { throw CancellationError() }
+        if logSnapshots.count >= 8 && logSnapshots[target] == nil { logSnapshots.removeAll() }
         logSnapshots[target] = result
         return result
     }
 
     func serviceAction(_ action: ServiceCommand) async {
+        guard !actionBusy else { return }
         let permitted: Bool
         switch action.kind {
-        case .testGeminiKey: permitted = serviceSnapshot?.gemini?.contains { $0.id == action.id && $0.canTest == true } == true
-        case .fireClasseraReport: permitted = serviceSnapshot?.classera?.contains { $0.id == action.id && $0.canFire == true } == true
+        case .testGeminiKey: permitted = (1...10).map { "key-\($0)" }.contains(action.id) && serviceSnapshot?.gemini?.contains { $0.id == action.id && $0.canTest == true } == true
+        case .fireClasseraReport: permitted = (1...3).map { "classera-\($0)" }.contains(action.id) && serviceSnapshot?.classera?.contains { $0.id == action.id && $0.canFire == true } == true
         }
         guard permitted && servicesError == nil && !servicesLoading else { actionError = "This control is not available from your server."; return }
         let id: String
@@ -372,7 +389,7 @@ final class ServerAPI: ObservableObject {
         let path = action.kind == .testGeminiKey ? "/api/services/gemini/\(id)/test" : "/api/services/classera/\(id)/fire"
         await performAction(path: path, name: action.name, action: .start,
             authorizationReason: action.kind == .fireClasseraReport ? "Send the real Classera WhatsApp report for \(action.name)." : "Test \(action.name) through your server.",
-            refreshServices: true)
+            refreshServices: true, activityTitle: action.kind == .fireClasseraReport ? "Report request for \(action.name)" : "Key test for \(action.name)")
     }
 
     static func isRefreshCancellation(_ error: Error) -> Bool {
@@ -396,10 +413,12 @@ final class ServerAPI: ObservableObject {
     }
 
     func processAction(id: Int, name: String, action: ServerAction) async {
+        guard dashboard?.processes.contains(where: { $0.id == id }) == true else { actionError = "Process is not in the verified snapshot."; return }
         await performAction(path: "/api/process/\(id)/\(action.rawValue)", name: name, action: action)
     }
 
     func dockerAction(name: String, action: ServerAction) async {
+        guard dashboard?.containers.contains(where: { $0.name == name }) == true else { actionError = "Container is not in the verified snapshot."; return }
         do {
             let encoded = try Self.encodedContainerName(name)
             await performAction(path: "/api/docker/\(encoded)/\(action.rawValue)", name: name, action: action)
@@ -407,20 +426,24 @@ final class ServerAPI: ObservableObject {
     }
 
     private func performAction(path: String, name: String, action: ServerAction,
-                               authorizationReason: String? = nil, refreshServices: Bool = false) async {
+                               authorizationReason: String? = nil, refreshServices: Bool = false, activityTitle: String? = nil) async {
+        guard !actionBusy else { return }
         guard !previewMode else { actionError = "Preview mode cannot send server commands."; return }
         guard canControl else { actionError = "Refresh the dashboard and reconnect before sending a command."; return }
         actionBusy = true
-        actionProgress = "Authorizing \(action.rawValue)…"
+        actionProgress = "Authorize \(activityTitle ?? action.title)…"
         actionNotice = nil
         defer { actionBusy = false; actionProgress = "" }
+        let eventTitle = activityTitle ?? "\(action.title) \(name)"
+        var eventResult = ActivityEvent.Result.uncertain
+        defer { library.record(title: eventTitle, result: eventResult) }
         var commandStarted = false
         let generation = refreshGeneration
         do {
             try await authorize(authorizationReason ?? "\(action.title) \(name) on your server.")
             guard accessAllowed && generation == refreshGeneration else { throw CancellationError() }
             let command = try request(path: path, method: "POST")
-            actionProgress = "Sending \(action.rawValue)…"
+            actionProgress = "Sending request for \(name)…"
             commandStarted = true
             let (data, response) = try await session.data(for: command)
             guard accessAllowed && generation == refreshGeneration else { return }
@@ -430,15 +453,23 @@ final class ServerAPI: ObservableObject {
                 throw APIError.message("The server declined the command.")
             }
             actionNotice = refreshServices ? "Request accepted for \(name). Check its last result below." : "\(action.title) requested for \(name)."
+            eventResult = .accepted
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             clearNoticeSoon()
             if refreshServices { await loadServices() } else { await loadDashboard() }
         } catch {
-            guard accessAllowed && generation == refreshGeneration else { return }
+            guard accessAllowed && generation == refreshGeneration else {
+                if !commandStarted { eventResult = .cancelled }
+                return
+            }
+            eventResult = commandStarted && error is URLError ? .uncertain : .failed
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
             if DeviceAuthorization.isCancellation(error) {
+                eventResult = .cancelled
                 actionNotice = "Cancelled. No command was sent."
                 clearNoticeSoon()
             } else if !commandStarted && Self.isRefreshCancellation(error) {
+                eventResult = .cancelled
                 actionNotice = "Cancelled. No command was sent."
                 clearNoticeSoon()
             } else if commandStarted && error is URLError {
@@ -480,6 +511,7 @@ final class ServerAPI: ObservableObject {
             default: return "The server returned HTTP \(http.status). Try refreshing shortly."
             }
         }
+        if Self.isRefreshCancellation(error) { return "Refresh cancelled. Your last snapshot is available." }
         if error is DecodingError { return "The server response could not be read. Your last snapshot is still available." }
         if let url = error as? URLError {
             if url.code == .timedOut { return "The server took too long to respond. Pull down to retry." }

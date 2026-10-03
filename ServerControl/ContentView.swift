@@ -15,16 +15,21 @@ struct PendingCommand: Identifiable {
         }
     }
 }
+enum DetailRoute: Hashable {
+    case process(Int), docker(String), service(ServicePage), logs(LogTarget, String)
+}
 
 struct ContentView: View {
     @ObservedObject var api: ServerAPI
     @State private var pending: PendingCommand?
     @State private var selectedTab = ContentView.initialTab
+    @State private var homePath: [DetailRoute] = []
     @AppStorage("appearance.v2") private var appearance = AppAppearance.system.rawValue
 
-    init(api: ServerAPI, initialTab: Int? = nil) {
+    init(api: ServerAPI, initialTab: Int? = nil, initialDestination: DetailRoute? = nil) {
         self.api = api
         _selectedTab = State(initialValue: initialTab ?? Self.initialTab)
+        _homePath = State(initialValue: initialDestination.map { [$0] } ?? [])
     }
 
     private static var initialTab: Int {
@@ -48,7 +53,17 @@ struct ContentView: View {
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            NavigationStack { HomeView(api: api) }
+            NavigationStack(path: $homePath) {
+                HomeView(api: api, requestCommand: { pending = $0 })
+                    .navigationDestination(for: DetailRoute.self) { route in
+                        switch route {
+                        case .process(let id): ProcessDetailView(api: api, processID: id, requestCommand: { pending = $0 })
+                        case .docker(let name): ContainerDetailView(api: api, containerName: name, requestCommand: { pending = $0 })
+                        case .service(let page): ServiceDetailView(api: api, page: page)
+                        case .logs(let target, let name): LogViewer(api: api, target: target, name: name)
+                        }
+                    }
+            }
                 .tabItem { Label("Home", systemImage: "square.grid.2x2") }
                 .tag(0)
             NavigationStack { ProcessesView(api: api, requestCommand: { pending = $0 }) }
@@ -57,13 +72,14 @@ struct ContentView: View {
             NavigationStack { ContainersView(api: api, requestCommand: { pending = $0 }) }
                 .tabItem { Label("Docker", systemImage: "shippingbox") }
                 .tag(2)
-            NavigationStack { ServiceCatalogView(api: api) }
-                .tabItem { Label("Services", systemImage: "square.stack.3d.up") }
+            NavigationStack { ActivityView() }
+                .tabItem { Label("Activity", systemImage: "clock.arrow.circlepath") }
                 .tag(3)
             NavigationStack { SettingsView(api: api) }
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(4)
         }
+        .environmentObject(api.library)
         .tint(Brand.accent)
         .preferredColorScheme(colorScheme)
         .confirmationDialog(pending?.title ?? "Confirm command",
@@ -83,13 +99,14 @@ struct ContentView: View {
                isPresented: Binding(get: { api.actionError != nil }, set: { if !$0 { api.actionError = nil } })) {
             Button("OK", role: .cancel) { api.actionError = nil }
         } message: { Text(api.actionError ?? "") }
-        .overlay(alignment: .center) {
+        .safeAreaInset(edge: .top, spacing: 0) {
             if api.actionBusy {
                 HStack(spacing: 12) {
                     ProgressView().tint(Brand.accent)
                     Text(api.actionProgress).font(.subheadline.weight(.medium))
                 }
-                .padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+                .font(.caption).padding(12).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                .padding(.top, 8).allowsHitTesting(false)
                 .shadow(color: .black.opacity(0.1), radius: 20, y: 8)
                 .accessibilityElement(children: .combine)
             }

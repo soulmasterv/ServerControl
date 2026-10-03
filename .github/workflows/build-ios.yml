@@ -61,7 +61,7 @@ jobs:
             ServerControl.ipa.sha256
           if-no-files-found: error
           retention-days: 30
-      - name: Capture V3 previews
+      - name: Capture V4 previews
         if: github.event_name == 'workflow_dispatch' && inputs.capture_previews
         timeout-minutes: 8
         run: |
@@ -72,7 +72,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.capture_previews
         uses: actions/upload-artifact@v4
         with:
-          name: ServerControl-V3-Previews
+          name: ServerControl-V4-Previews
           path: screenshots/
           if-no-files-found: error
           retention-days: 30

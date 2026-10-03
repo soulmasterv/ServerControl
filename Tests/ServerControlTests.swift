@@ -110,38 +110,57 @@ final class ServerControlTests: XCTestCase {
         XCTAssertEqual(MockURLProtocol.requests.count, 2)
     }
 
-    func testCompactScreensOnIPhoneWithKeyboardDismissed() async throws {
+    private var visualServices: ServiceSnapshot {
+        let now = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-120))
+        let statuses = ["Working", "Rate Limited", "Invalid", "High Demand", "Google Issue", "Unknown"]
+        return ServiceSnapshot(geminiHealth: "Working",
+            gemini: (1...10).map { GeminiKeyStatus(id: "key-\($0)", name: "Gemini \($0)", status: statuses[($0-1) % statuses.count], lastAuthenticationCheck: now, lastGenerationCheck: now, canTest: $0 != 6) },
+            classera: (1...3).map { ClasseraStatus(id: "classera-\($0)", name: "Classera \($0)", status: "Working", schedulerStatus: "Online", webhookStatus: "Working", lastRun: now, lastReport: now, canFire: true) },
+            padel: ["watcher", "bot", "dashboard", "whatsapp"].map { PadelComponent(id: $0, name: "Padel \($0.capitalized)", status: "Online", deliveryStatus: "Billing Required", lastNotification: now) })
+    }
+    func testV4MajorScreensOnIPhone() async throws {
         let api = makeAPI()
-        await api.loadDashboard()
+        let services = visualServices
+        let logData = LogSnapshot(lines: (1...16).map { LogLine(id: String($0), stream: $0.isMultiple(of: 4) ? "stderr" : "stdout", text: $0.isMultiple(of: 4) ? "Delivery billing check requires attention" : "Application health check completed", timestamp: nil) }, truncated: false, fetchedAt: ISO8601DateFormatter().string(from: Date()))
+        MockURLProtocol.handler = { request in
+            if request.url?.path.contains("/logs") == true {
+                if request.url?.path.contains("/docker/") == true { return (501, Data()) }
+                return (200, try JSONEncoder().encode(logData))
+            }
+            if request.url?.path == "/api/services" { return (200, try JSONEncoder().encode(services)) }
+            return (200, try JSONEncoder().encode(PreviewFixtures.dashboard))
+        }
+        await api.refreshAll()
+        api.library.toggle(.service(.padel))
+        api.library.record(title: "Report request for Classera 1", result: .accepted)
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let previousAppearance = UserDefaults.standard.string(forKey: "appearance.v2")
         defer {
             if let previousAppearance { UserDefaults.standard.set(previousAppearance, forKey: "appearance.v2") }
             else { UserDefaults.standard.removeObject(forKey: "appearance.v2") }
         }
+        let screens: [(String, Int, DetailRoute?)] = [
+            ("home", 0, nil), ("pm2", 1, nil), ("pm2-detail", 0, .process(1)),
+            ("logs", 0, .logs(.process(1), "classera-service")), ("docker", 2, nil),
+            ("docker-detail", 0, .docker("uptime-kuma")), ("gemini", 0, .service(.gemini)),
+            ("classera", 0, .service(.classera)), ("padel", 0, .service(.padel)),
+            ("activity", 3, nil), ("settings", 4, nil),
+            ("docker-logs-unavailable", 0, .logs(.docker("uptime-kuma"), "uptime-kuma"))]
         for mode in ["light", "dark"] {
-          for (screen, tab) in [("home", 0), ("pm2", 1), ("docker", 2), ("services", 3), ("settings", 4)] {
-            UserDefaults.standard.set(mode, forKey: "appearance.v2")
-            let window = UIWindow(windowScene: scene)
-            window.frame = scene.coordinateSpace.bounds
-            window.rootViewController = UIHostingController(rootView: ContentView(api: api, initialTab: tab))
-            window.makeKeyAndVisible()
-            window.endEditing(true)
-            let ready = expectation(description: "SwiftUI laid out \(mode) PM2")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { ready.fulfill() }
-            await fulfillment(of: [ready], timeout: 5)
-            window.layoutIfNeeded()
-            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
-                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            for (screen, tab, destination) in screens {
+                UserDefaults.standard.set(mode, forKey: "appearance.v2")
+                let window = UIWindow(windowScene: scene)
+                window.frame = scene.coordinateSpace.bounds
+                window.rootViewController = UIHostingController(rootView: ContentView(api: api, initialTab: tab, initialDestination: destination))
+                window.makeKeyAndVisible(); window.endEditing(true)
+                let ready = expectation(description: "SwiftUI laid out \(screen) \(mode)")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { ready.fulfill() }
+                await fulfillment(of: [ready], timeout: 5)
+                window.layoutIfNeeded()
+                let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+                let attachment = XCTAttachment(image: image); attachment.name = "\(screen)-\(mode)"; attachment.lifetime = .keepAlways; add(attachment)
+                XCTAssertNil(api.errorMessage); window.isHidden = true
             }
-            let attachment = XCTAttachment(image: image)
-            attachment.name = "\(screen)-\(mode)"
-            attachment.lifetime = .keepAlways
-            add(attachment)
-            XCTAssertEqual(api.dashboard?.processes.count, 16)
-            XCTAssertNil(api.errorMessage)
-            window.isHidden = true
-          }
         }
     }
 
@@ -163,9 +182,9 @@ final class ServerControlTests: XCTestCase {
         await primary.loadDashboard()
         XCTAssertEqual(MockURLProtocol.requests.count, 1)
         XCTAssertEqual(primary.connection, .unauthorized)
-        XCTAssertThrowsError(try ServerAPI.validatedBaseURL("https://attacker.example"))
-        XCTAssertThrowsError(try ServerAPI.validatedBaseURL("https://control.admin-ai.site:444"))
-        XCTAssertThrowsError(try ServerAPI.validatedBaseURL("https://control.admin-ai.site/other"))
+        XCTAssertNoThrow(try ServerAPI.validatedBaseURL("https://custom.example"))
+        XCTAssertNoThrow(try ServerAPI.validatedBaseURL("https://custom.example:444"))
+        XCTAssertNoThrow(try ServerAPI.validatedBaseURL("https://custom.example/server-control"))
     }
 
     func testBackgroundLocksRequestsAndControlsUntilFreshSnapshot() async {
@@ -191,7 +210,7 @@ final class ServerControlTests: XCTestCase {
 
     func testAppLockCancelKeepsLockedAndAllowsExplicitRetry() async {
         var attempts = 0
-        let session = AppSession(authenticate: {
+        let session = AppSession(defaults: defaults, authenticate: {
             attempts += 1
             if attempts == 1 { throw NSError(domain: LAError.errorDomain, code: LAError.userCancel.rawValue) }
         })
@@ -444,4 +463,103 @@ final class ServerControlTests: XCTestCase {
         XCTAssertNil(api.errorMessage)
         XCTAssertFalse(api.loading)
     }
+    func testServiceDecodingAndEveryGeminiStatus() throws {
+        let decoded = try JSONDecoder().decode(ServiceSnapshot.self, from: JSONEncoder().encode(visualServices))
+        XCTAssertEqual(decoded.gemini?.count, 10)
+        for state in ["Working", "Rate Limited", "Invalid", "High Demand", "Google Issue", "Unknown"] {
+            XCTAssertTrue(decoded.gemini?.contains { $0.status == state } == true)
+        }
+        XCTAssertEqual(StatusTone("Working"), .healthy)
+        XCTAssertEqual(StatusTone("Rate Limited"), .warning)
+        XCTAssertEqual(StatusTone("Invalid"), .error)
+        XCTAssertEqual(StatusTone("High Demand"), .warning)
+        XCTAssertEqual(StatusTone("Google Issue"), .error)
+        XCTAssertEqual(StatusTone("Unknown"), .unknown)
+    }
+    func testClasseraAndPadelStatesStayIndependent() async throws {
+        let api = makeAPI()
+        let services = visualServices
+        MockURLProtocol.handler = { _ in (200, try JSONEncoder().encode(services)) }
+        await api.loadServices()
+        XCTAssertEqual(api.serviceSnapshot?.classera?.count, 3)
+        XCTAssertEqual(api.serviceSnapshot?.classera?.first?.schedulerStatus, "Online")
+        XCTAssertEqual(api.serviceSnapshot?.classera?.first?.webhookStatus, "Working")
+        XCTAssertEqual(api.serviceStatus(.padel), "Billing Required")
+        XCTAssertTrue(api.serviceSnapshot?.padel?.allSatisfy { $0.status == "Online" } == true)
+        for delivery in ["Billing Required", "Payment Ineligible", "Delivery Failed", "Working", "Unknown"] {
+            let component = PadelComponent(id: "whatsapp", name: "WhatsApp", status: "Online", deliveryStatus: delivery, lastNotification: nil)
+            let decoded = try JSONDecoder().decode(PadelComponent.self, from: JSONEncoder().encode(component))
+            XCTAssertEqual(decoded.deliveryStatus, delivery)
+            XCTAssertEqual(decoded.status, "Online")
+        }
+    }
+    func testHumanReadableDatesAndInvalidDates() throws {
+        let now = try XCTUnwrap(HumanTime.parse("2026-10-03T12:00:00Z"))
+        XCTAssertEqual(HumanTime.label("2026-10-03T11:59:40Z", now: now), "Just now")
+        XCTAssertEqual(HumanTime.label("2026-10-03T11:56:00.000000+00:00", now: now), "4 min ago")
+        XCTAssertTrue(HumanTime.label("2026-10-03T08:00:00Z", now: now).hasPrefix("Today,"))
+        XCTAssertEqual(HumanTime.label("2026-10-02T12:00:00Z", now: now), "Yesterday")
+        XCTAssertEqual(HumanTime.label("invalid", now: now), "Not reported")
+        XCTAssertEqual(HumanTime.label(nil, now: now), "Not reported")
+    }
+    func testFavoritesAndBoundedLocalHistoryPersist() {
+        let library = HomelabStore(defaults: defaults)
+        library.toggle(.service(.padel)); library.toggle(.process(2)); library.toggle(.docker("immich-server"))
+        for i in 0..<110 { library.record(title: "Restart process \(i)", result: .accepted) }
+        let loaded = HomelabStore(defaults: defaults)
+        XCTAssertEqual(loaded.favorites.count, 3)
+        XCTAssertEqual(loaded.events.count, 100)
+        XCTAssertEqual(loaded.events.first?.title, "Restart process 109")
+        loaded.toggle(.process(2)); XCTAssertFalse(loaded.favorites.contains(.process(2)))
+        loaded.clearHistory(); XCTAssertTrue(HomelabStore(defaults: defaults).events.isEmpty)
+    }
+    func testCustomHTTPSDoesNotFailOverToAnotherServer() async throws {
+        defaults.set("https://custom.example:8443/control", forKey: "serverURL")
+        let api = makeAPI()
+        XCTAssertEqual(try api.request(path: "/api/dashboard").url?.absoluteString, "https://custom.example:8443/control/api/dashboard")
+        MockURLProtocol.handler = { _ in throw URLError(.cannotConnectToHost) }
+        await api.loadDashboard()
+        XCTAssertEqual(MockURLProtocol.requests.count, 1)
+        XCTAssertEqual(MockURLProtocol.requests.first?.url?.host, "custom.example")
+    }
+    func testConcurrentCommandsAuthorizeAndPostOnlyOnce() async throws {
+        let started = expectation(description: "Authentication started")
+        var resume: CheckedContinuation<Void, Never>?
+        let api = makeAPI(authorize: { _ in await withCheckedContinuation { resume = $0; started.fulfill() } })
+        await api.loadDashboard()
+        MockURLProtocol.handler = { request in
+            if request.httpMethod == "POST" { return (200, Data("{\"ok\":true}".utf8)) }
+            return (200, try JSONEncoder().encode(PreviewFixtures.dashboard))
+        }
+        let first = Task { await api.processAction(id: 1, name: "classera-service", action: .restart) }
+        await fulfillment(of: [started], timeout: 5)
+        await api.processAction(id: 1, name: "classera-service", action: .restart)
+        resume?.resume(); await first.value
+        XCTAssertEqual(MockURLProtocol.requests.filter { $0.httpMethod == "POST" }.count, 1)
+        XCTAssertEqual(api.library.events.count, 1)
+        XCTAssertEqual(api.library.events.first?.result, .accepted)
+        await api.processAction(id: 999, name: "unknown", action: .stop)
+        XCTAssertEqual(MockURLProtocol.requests.filter { $0.httpMethod == "POST" }.count, 1)
+    }
+    func testOptionalAppLockNeverDisablesSensitiveActionAuthentication() async {
+        defaults.set(false, forKey: "appLock.v4")
+        var unlockCalls = 0
+        let session = AppSession(defaults: defaults, authenticate: { unlockCalls += 1 })
+        await session.activate(); XCTAssertTrue(session.isUnlocked); XCTAssertEqual(unlockCalls, 0)
+        var actionCalls = 0
+        let api = makeAPI(authorize: { _ in actionCalls += 1; throw NSError(domain: LAError.errorDomain, code: LAError.userCancel.rawValue) })
+        await api.loadDashboard(); await api.processAction(id: 1, name: "classera-service", action: .stop)
+        XCTAssertEqual(actionCalls, 1); XCTAssertFalse(MockURLProtocol.requests.contains { $0.httpMethod == "POST" })
+        XCTAssertEqual(api.library.events.first?.result, .cancelled)
+    }
+    func testLogClientRedactionAndStreamBoundary() async throws {
+        let api = makeAPI()
+        let raw = LogSnapshot(lines: [LogLine(id: "1", stream: "stderr", text: "Authorization: Bearer test-secret-sentinel", timestamp: nil), LogLine(id: "2", stream: "stdout", text: "password=sentinel token=sentinel", timestamp: nil), LogLine(id: "3", stream: "other", text: "hidden", timestamp: nil)], truncated: false, fetchedAt: nil)
+        MockURLProtocol.handler = { _ in (200, try JSONEncoder().encode(raw)) }
+        let logs = try await api.loadLogs(.process(1))
+        XCTAssertEqual(logs.lines.count, 2)
+        XCTAssertFalse(logs.lines.map(\.text).joined().contains("sentinel"))
+        XCTAssertTrue(logs.lines.map(\.text).joined().contains("[redacted]"))
+    }
+
 }

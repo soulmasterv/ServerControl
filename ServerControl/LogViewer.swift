@@ -34,6 +34,7 @@ struct LogViewer: View {
     @State private var live = false
     @State private var search = ""
     @State private var stream = "all"
+    @State private var autoFollow = true
     private var lines: [LogLine] {
         (snapshot?.lines ?? []).filter {
             (stream == "all" || $0.stream == stream) && (search.isEmpty || $0.text.localizedCaseInsensitiveContains(search))
@@ -44,16 +45,25 @@ struct LogViewer: View {
             VStack(spacing: 8) {
                 HStack {
                     Button(live ? "Pause" : "Live") { live.toggle() }
+                    Toggle("Follow", isOn: $autoFollow).toggleStyle(.button)
                     Spacer()
                     Button("Jump to latest") { if let id = lines.last?.id { reader.scrollTo(id, anchor: .bottom) } }
-                    Button { Task { await refresh() } } label: { Image(systemName: "arrow.clockwise") }.disabled(loading)
+                    Button { Task { await refresh() } } label: { ZStack { Image(systemName: "arrow.clockwise").opacity(loading ? 0 : 1); if loading { ProgressView().controlSize(.small) } } }.disabled(loading).accessibilityLabel("Refresh logs")
                 }.font(.caption).padding(.horizontal)
+                HStack {
+                    Label(live ? "Live • every 5 seconds" : "Paused", systemImage: live ? "dot.radiowaves.left.and.right" : "pause.circle")
+                    Spacer()
+                    Button("Copy visible") { UIPasteboard.general.string = lines.map { "[\($0.stream)] \($0.text)" }.joined(separator: "\n") }.disabled(lines.isEmpty)
+                }.font(.caption).foregroundStyle(.secondary).padding(.horizontal)
                 Picker("Output", selection: $stream) {
                     Text("All").tag("all"); Text("stdout").tag("stdout"); Text("stderr").tag("stderr")
                 }.pickerStyle(.segmented).padding(.horizontal)
-                if loading { ProgressView().controlSize(.small) }
-                if let message { Text(message).font(.caption).foregroundStyle(.secondary).padding(.horizontal) }
-                if let fetched = snapshot?.fetchedAt { Text("Last updated: \(fetched)").font(.caption2).foregroundStyle(.secondary) }
+                if loading && snapshot == nil { ProgressView("Loading logs").controlSize(.small) }
+                if snapshot != nil, let message { Text(message).font(.caption).foregroundStyle(.secondary).padding(.horizontal) }
+                if snapshot == nil && !loading, let message {
+                    FeatureUnavailable(title: "Logs unavailable", message: message)
+                }
+                if let fetched = snapshot?.fetchedAt { Text("Last updated: \(HumanTime.label(fetched))").font(.caption2).foregroundStyle(.secondary) }
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 6) {
                         ForEach(lines) { line in
@@ -68,10 +78,13 @@ struct LogViewer: View {
                                     .contextMenu { Button("Copy line") { UIPasteboard.general.string = line.text } }
                             }.padding(8).background(Brand.surface, in: RoundedRectangle(cornerRadius: 8)).id(line.id)
                         }
-                        if lines.isEmpty && snapshot != nil { Text("No matching log lines").font(.caption).foregroundStyle(.secondary) }
+                        if lines.isEmpty && snapshot != nil { FeatureUnavailable(title: search.isEmpty ? "No log lines" : "No matches", message: "Choose another stream or refresh the console.") }
                         if snapshot?.truncated == true { Text("Showing the latest 500 lines").font(.caption2).foregroundStyle(.secondary) }
                     }.padding(.horizontal)
                 }.refreshable { await refresh() }
+                .onChange(of: lines.last?.id) { _, id in
+                    if autoFollow, let id { reader.scrollTo(id, anchor: .bottom) }
+                }
             }.padding(.top, 8)
         }.background(Brand.background).navigationTitle("\(name) logs").navigationBarTitleDisplayMode(.inline)
         .searchable(text: $search, prompt: "Search logs")
@@ -111,22 +124,23 @@ struct ProcessDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 if let p = process {
-                    Surface {
+                    Panel {
                         VStack(alignment: .leading, spacing: 12) {
-                            LabeledContent("Status", value: p.status.capitalized)
+                            StatusBadge(status: p.status.capitalized)
                             LabeledContent("PM2 ID", value: String(p.id))
                             LabeledContent("CPU", value: p.cpu?.percentText ?? "Not reported")
                             LabeledContent("RAM", value: p.memoryMB.map { "\($0.oneDecimal) MB" } ?? "Not reported")
                             LabeledContent("Uptime", value: p.uptime ?? "Not reported")
                             LabeledContent("Restarts", value: p.restartCount.map(String.init) ?? "Not reported")
                             NavigationLink { LogViewer(api: api, target: .process(p.id), name: p.name) } label: { Label("Logs", systemImage: "text.alignleft") }
-                            ControlMenu(name: p.name, target: .process(p.id), disabled: !api.canControl, requestCommand: requestCommand)
+                            CommandButtons(name: p.name, target: .process(p.id), api: api, requestCommand: requestCommand)
                         }
                     }
                     SnapshotStamp(date: api.lastUpdated, failed: api.errorMessage != nil)
                 } else { Text("This process is no longer in the latest snapshot.").foregroundStyle(.secondary) }
             }.padding(16)
         }.background(Brand.background).navigationTitle(process?.name ?? "Process").navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .topBarTrailing) { FavoriteButton(target: .process(processID)) } }
         .refreshable { await api.loadDashboard() }
     }
 }

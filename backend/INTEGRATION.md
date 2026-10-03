@@ -1,5 +1,22 @@
 # Ubuntu agent required before Services becomes live
 
+## V4 contract preservation and future improvements
+
+V4 adds no mandatory routes and does not change these response schemas. The client
+consumes the existing endpoints when they are available; live availability cannot
+be verified from this repository without the user's authenticated server access.
+The checklist below documents the original V3.1 integration, not a new server rewrite.
+
+Optional V4.x additions: a bounded authenticated event-history feed with safe IDs,
+event type, actual result and timestamp; explicit container health metadata; PM2
+uptime/restart count; Padel notification metadata and separate WhatsApp delivery/
+billing state; per-integration last successful check. Preserve existing routes.
+Do not infer delivered reports from a running scheduler or accepted POST. On-device
+activity currently records only actions initiated on that iPhone.
+
+No remote APNs, new ports, credentials, arbitrary actions or filesystem reads are
+needed for the V4 UI. Docker logs may remain unavailable; the client explains this.
+
 ## BACKEND AGENT REQUIRED — V3.1 deployment checklist
 
 No live service integration or log endpoint deployment has been performed. The app
